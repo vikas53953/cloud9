@@ -8,6 +8,7 @@ import type { AgentReceipt, ReceiptStage, ReceiptVerdict } from "./receipts.js";
 // Same arrangement, same reason: `livesteps.ts` imports only `ID` and `RunStep`
 // back, type-only, so nothing here is really circular.
 import type { LiveRunSteps } from "./livesteps.js";
+import type { AgentResponseStreamEvent } from "./responsestream.js";
 // …but this one IS a value, and it is imported rather than re-spelled because
 // the hub's refusal has to be measured against the same number the wire
 // documents. It is a leaf: `livesteps.ts` has no runtime import of its own.
@@ -27,6 +28,7 @@ import { isAgentEffort } from "./effort.js";
 // costs nothing at runtime at all.
 import type { AgentTokenUse, SavingProposal, UsePeriod, WasteFinding } from "./tokenuse.js";
 import type { NotificationInboxEntry } from "./notification-inbox.js";
+import type { RecoveryMode, RecoveryDecision, RecoveryRequest, RunComparison } from "./run-recovery.js";
 
 export type ID = string;
 
@@ -1142,6 +1144,16 @@ export type TaskStatus =
 export interface Task {
   id: ID;
   title: string;           // the requested outcome (FR-TS-001)
+  /** The exact human message that created this task, when it came from chat. */
+  sourceMessageId?: ID;
+  /** The canonical thread root containing the source message, when applicable. */
+  sourceThreadId?: ID;
+  /** The human account that owns this task's request. Legacy rows may omit it. */
+  ownerId?: ID;
+  /** An explicitly chosen deadline; absent means the task has no deadline. */
+  deadlineAt?: number;
+  /** Stable mutation id used to replay one accepted create without minting twice. */
+  createRequestId?: ID;
   requesterId: ID;         // human who asked
   requesterName: string;
   agentId: ID;             // assigned agent (FR-TS-007 multi-agent: later)
@@ -1344,6 +1356,14 @@ export interface RunStep {
   ok?: boolean;
 }
 
+/** A provider-reported test command, kept separate from private reasoning. */
+export interface RunTestFact {
+  /** the command or runner name the provider exposed publicly */
+  command: string;
+  /** only when the provider reported the command's outcome */
+  ok?: boolean;
+}
+
 /**
  * Token and money figures, each present only if the CLI reported it.
  *
@@ -1416,7 +1436,7 @@ export interface RunUsage {
   handedToIt?: number;
 }
 
-export type RunOutcome = "ok" | "failed" | "cancelled";
+export type RunOutcome = "ok" | "failed" | "cancelled" | "refused";
 export type RunKind = "chat" | "task" | "schedule";
 
 /** One agent turn or one delegated job, start to finish. */
@@ -1450,9 +1470,24 @@ export interface RunRecord {
   /** plain-words failure, already redacted. Absent on a clean run. */
   error?: string;
   steps: RunStep[];
+  /** test commands observed in the provider's public command stream */
+  tests?: RunTestFact[];
   usage?: RunUsage;
   /** the CLI's own conversation id */
   sessionId?: string;
+  /** Public provider metadata; never a credential or private transcript. */
+  effort?: string;
+  branch?: string;
+  commit?: string;
+  files?: string[];
+  pullRequest?: string;
+  artifacts?: Array<{ id: string; name: string; version?: number; size?: number; available?: boolean }>;
+  checkpointId?: string;
+  priorRunId?: string;
+  /** The thread/reply this turn answered, when the engine recorded one. */
+  replyTo?: ID;
+  /** Effective public invocation settings for the turn, when one was selected. */
+  invocation?: AgentInvocationReceipt;
   /**
    * DID THIS TURN CONTINUE THE HARNESS'S OWN SESSION, or start a cold one?
    *
@@ -1561,6 +1596,9 @@ export const RUN_LIMITS = {
   detail: 300,
   ask: 500,
   error: 300,
+  /** test command facts retained per run */
+  tests: 64,
+  test: 240,
   /** a single stream line longer than this is skipped, not parsed */
   line: 256 * 1024,
 } as const;
@@ -2761,6 +2799,52 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
  */
 export type ApprovalKind = "task" | "action" | "plan" | "saving";
 
+/** Bounded human input accepted by the inline approval checkpoint. */
+export const APPROVAL_CHECKPOINT_LIMITS = {
+  instructions: 4000,
+  question: 1000,
+  epoch: 128,
+  requestId: 64,
+} as const;
+
+export type ApprovalCheckpointDecision = "approved" | "rejected" | "edit" | "question";
+
+export interface ApprovalClarification {
+  id: ID;
+  askedBy: ID;
+  text: string;
+  createdAt: number;
+}
+
+/** Keep owner-entered text plain, bounded, and safe to render. */
+export function tidyApprovalText(value: unknown, limit: number): string {
+  if (typeof value !== "string") return "";
+  const flat = value
+    .replace(new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f"
+      + "\\u200b-\\u200f\\u2028\\u2029]", "g"), "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+export function validateApprovalInstructions(value: unknown): string | null {
+  return tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.instructions)
+    ? null : "instructions cannot be empty";
+}
+
+export function validateApprovalQuestion(value: unknown): string | null {
+  return tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.question)
+    ? null : "question cannot be empty";
+}
+
+/** Checkpoint mutations are durable/idempotent, so every one needs a safe key. */
+export function validateApprovalCheckpointRequestId(value: unknown): string | null {
+  if (!isSafeStoredId(value) || (typeof value === "string" && value.length > APPROVAL_CHECKPOINT_LIMITS.requestId)) {
+    return "that checkpoint request id is not valid";
+  }
+  return null;
+}
+
 export interface Approval {
   id: ID;
   /**
@@ -2811,11 +2895,39 @@ export interface Approval {
    * `tidySaving`, drawn as plain text, never interpreted.
    */
   saving?: SavingProposal;
+  /** Recovery action awaiting this same owner's fresh approval. */
+  recoveryRequestId?: ID;
+  /** Exact text currently gated by this checkpoint. Absent on legacy cards. */
+  instructions?: string;
+  /** Monotonic revision; every edit or clarification invalidates old clicks. */
+  revision?: number;
+  /** Opaque token paired with `revision`, checked again at decision time. */
+  approvalEpoch?: string;
+  /** Person who requested the underlying task, when distinct from the owner. */
+  requesterId?: ID;
+  /** Durable, bounded questions asked while this card is pending. */
+  clarifications?: ApprovalClarification[];
+  /** Idempotency receipt for the last checkpoint mutation. */
+  lastCheckpoint?: {
+    requestId: ID;
+    actorId: ID;
+    operation: ApprovalCheckpointDecision;
+    payloadHash: string;
+    revision: number;
+  };
+  /** Bounded durable replay ledger for recent checkpoint mutations. */
+  checkpointReceipts?: Array<{
+    requestId: ID;
+    actorId: ID;
+    operation: ApprovalCheckpointDecision;
+    payloadHash: string;
+    revision: number;
+  }>;
 }
 
 export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
-  | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
+  | "approval_decided" | "approval_checkpoint" | "agent_created" | "agent_updated" | "agent_deleted"
   | "workflow_created" | "workflow_updated" | "workflow_archived" | "workflow_run_started"
   | "workflow_run_state"
   | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
@@ -3029,6 +3141,95 @@ export const DEMO_REPLY_PREFIX = "[demo — not a real answer] ";
 export type ChannelKind = "channel" | "dm";
 
 /**
+ * The storage boundary for an agent's durable notes in one conversation.
+ *
+ * `none` is the conservative default for direct messages. `explicit` keeps
+ * today's behaviour: only a human `!remember` request may create a
+ * conversation-scoped note. `summary` is an explicit opt-in for compact
+ * decision/outcome notes written by the agent; it is still Cloud9 storage,
+ * not model-level forgetting.
+ */
+export type ChannelMemoryMode = "none" | "explicit" | "summary";
+
+export const CHANNEL_MEMORY_MODES: readonly ChannelMemoryMode[] = ["none", "explicit", "summary"];
+
+export interface ChannelMemoryPolicy {
+  channelId: ID;
+  agentId: ID;
+  mode: ChannelMemoryMode;
+  revision: number;
+  updatedAt: number;
+  updatedBy: ID;
+  /** true when no explicit row exists and the mode is the documented default. */
+  isDefault?: boolean;
+}
+
+export interface ChannelMemoryPolicyAudit {
+  id: ID;
+  channelId: ID;
+  agentId: ID;
+  revision: number;
+  mode: ChannelMemoryMode;
+  previousMode?: ChannelMemoryMode;
+  actorId: ID;
+  at: number;
+  /** replay-safe owner-scoped mutation receipt, when one was supplied */
+  requestId?: ID;
+}
+
+export function isChannelMemoryMode(value: unknown): value is ChannelMemoryMode {
+  return value === "none" || value === "explicit" || value === "summary";
+}
+
+/** Direct messages start with no durable channel memory; rooms preserve v1. */
+export function defaultChannelMemoryMode(kind: ChannelKind): ChannelMemoryMode {
+  return kind === "dm" ? "none" : "explicit";
+}
+
+export function channelMemoryModeWords(mode: ChannelMemoryMode): string {
+  if (mode === "none") return "No retention";
+  if (mode === "summary") return "Decision summaries";
+  return "Explicit only";
+}
+
+export function channelMemoryPolicyWords(mode: ChannelMemoryMode): string {
+  if (mode === "none") {
+    return "Nothing from this conversation is saved in Cloud9 channel memory. " +
+      "The model may still see the current conversation while it is open.";
+  }
+  if (mode === "summary") {
+    return "Cloud9 may keep short decision or outcome notes for this agent in this " +
+      "conversation. This controls Cloud9 storage; it cannot make a model forget " +
+      "anything already shown to it.";
+  }
+  return "Only an explicit human !remember request may save a short note for this " +
+    "conversation. Cloud9 does not claim model-level forgetting.";
+}
+
+/** One enforcement rule used by the engine and by focused policy tests. */
+export function channelMemoryMaySave(
+  mode: ChannelMemoryMode,
+  source: MemoryNote["source"],
+  kind: MemoryKind,
+): boolean {
+  if (mode === "none") return false;
+  if (mode === "explicit") return source === "owner";
+  return source === "owner" || kind === "decision" || kind === "outcome";
+}
+
+export function channelMemoryMayUse(mode: ChannelMemoryMode, note: MemoryNote): boolean {
+  // `none` governs durable notes that came from this channel. Global agent
+  // notes predate channel policy and remain available to seed a DM; the UI
+  // explicitly promises that a DM's No retention setting does not erase the
+  // agent's owner-scoped memory elsewhere.
+  if (note.channelId === undefined) return true;
+  if (mode === "none") return false;
+  // Summary mode limits what the agent itself may write, while still allowing
+  // an explicitly requested owner note to be read back in that channel.
+  return true;
+}
+
+/**
  * Who may CHANGE a conversation, as opposed to who may talk in it.
  *
  * - `owner` — made it (or was handed it). May do everything, including hand
@@ -3121,6 +3322,52 @@ export interface ChannelSummary {
   createdAt: number;
 }
 
+/** A source reference in an explicit thread summary. The relay re-checks the
+ * message before projecting it; a client never gets to turn an id into access. */
+export interface ThreadSummarySource {
+  messageId: ID;
+  label: string;
+}
+
+export type ThreadSummaryStatus = "pending" | "ready" | "refused" | "unavailable";
+
+export const THREAD_SUMMARY_LIMITS = {
+  itemCount: 8,
+  sourceCount: 24,
+  pendingCount: 128,
+  itemChars: 320,
+  sourceLabel: 160,
+  error: 300,
+} as const;
+
+/** Explicit, authenticated request to summarize one current thread. */
+export interface ThreadSummaryRequest {
+  requestId: ID;
+  channelId: ID;
+  threadId: ID;
+  sourceMessageId: ID;
+  agentId: ID;
+  requesterId: ID;
+}
+
+/** Provider-derived summary facts, never local NLP or private reasoning. */
+export interface ThreadSummaryResult {
+  requestId: ID;
+  channelId: ID;
+  threadId: ID;
+  sourceMessageId: ID;
+  agentId: ID;
+  requesterId: ID;
+  status: ThreadSummaryStatus;
+  updatedAt: number;
+  decisions: string[];
+  openQuestions: string[];
+  nextActions: string[];
+  sources: ThreadSummarySource[];
+  runId?: ID;
+  error?: string;
+}
+
 export type AuthorKind = "human" | "agent";
 
 /**
@@ -3143,6 +3390,36 @@ export interface Attachment {
   storedAs: string;
   uploadedBy: ID;
   uploadedAt: number;
+}
+
+/** A parked attachment as a draft can honestly draw it after a reconnect. */
+export type DraftAttachmentState = "available" | "expired" | "unavailable" | "deleted" | "removed";
+
+/** Metadata only: this shape deliberately has no browser File or byte field. */
+export interface DraftAttachment {
+  id: ID;
+  name: string;
+  size: number;
+  mime?: string;
+  uploadedAt: number;
+  expiresAt: number;
+  state: DraftAttachmentState;
+  error?: string;
+}
+
+export type ChatDraftState = "active" | "expired" | "unavailable" | "empty";
+
+/** One user/channel/thread draft, projected by the relay from stored facts. */
+export interface ChatDraft {
+  id: ID;
+  channelId: ID;
+  threadId?: ID;
+  text: string;
+  replyTo?: ID;
+  attachments: DraftAttachment[];
+  updatedAt: number;
+  expiresAt: number;
+  state: ChatDraftState;
 }
 
 // ---------- a file an AGENT made: the shared artifact ----------
@@ -3380,10 +3657,14 @@ export interface MessageReaction {
 
 export interface Message {
   id: ID;
+  /** Stable client identity retained across reconnect/retry. Never used as transport correlation. */
+  clientMessageId?: ID;
   channelId: ID;
   authorId: ID;
   authorName: string;
   authorKind: AuthorKind;
+  /** Correlates an ephemeral response preview with the durable agent answer. */
+  responseTriggerMessageId?: ID;
   authorEmoji?: string;
   text: string;
   ts: number;
@@ -3404,6 +3685,13 @@ export interface Message {
   deletedAt?: number;
   attachments?: Attachment[];
   /**
+   * A validated, per-message agent invocation request. This is deliberately
+   * public metadata only: it contains no prompt, credential, or provider
+   * transcript. The relay validates it against the mentioned agent before it
+   * stores or forwards the message.
+   */
+  invocation?: AgentInvocationRequest;
+  /**
    * How many replies hang off this message. STORED on the root and kept up to
    * date as replies arrive, not counted on the way out — so a channel list can
    * say "12 replies" without walking the conversation. (Buzz's
@@ -3412,6 +3700,8 @@ export interface Message {
   replyCount?: number;
   /** when the newest reply landed — the other half of "12 replies · 3m ago" */
   lastReplyAt?: number;
+  /** canonical reply id breaks same-millisecond thread/read ties */
+  lastReplyId?: ID;
   /**
    * WHO is in the thread, newest speaker first, at most three — so the reply
    * line can show their faces, the way Buzz stacks them beside "12 replies".
@@ -3423,6 +3713,89 @@ export interface Message {
   // ---- filled in by the relay when it hands a message out, never stored ----
   /** who reacted with what */
   reactions?: MessageReaction[];
+}
+
+/** The only permission narrowing a message may ask for. */
+export type InvocationPermissionScope = "agent" | "readOnly";
+
+/** Compact controls carried with one human message that names an agent. */
+export interface AgentInvocationRequest {
+  agentId: ID;
+  /** A model id from that agent owner's currently reported harness catalog. */
+  model?: string;
+  /** One of the four shared effort words; provider translation happens in engine. */
+  effort?: AgentEffort;
+  /** `readOnly` can only narrow the stored abilities/trust, never widen them. */
+  permissionScope?: InvocationPermissionScope;
+}
+
+/** Factual effective settings recorded when a turn actually starts. */
+export interface AgentInvocationReceipt {
+  agentId: ID;
+  /** The selected model, when the provider accepted and applied it. */
+  model?: string;
+  /** The selected effort, when this provider can honor it. */
+  effort?: AgentEffort;
+  permissionScope: InvocationPermissionScope;
+  trust: AgentTrust;
+  abilities: AgentAbilities;
+  /** Requested values that were intentionally not applied are explicit. */
+  requestedModel?: string;
+  requestedEffort?: AgentEffort;
+  fallback?: "provider-default";
+}
+
+/**
+ * Strip a client invocation down to the public fields that are part of the
+ * send identity. This is intentionally deterministic: retries may arrive
+ * with different object key order or with stale UI-only keys, but they must
+ * hash to the same accepted message.
+ */
+export function canonicalizeAgentInvocation(input: unknown): AgentInvocationRequest | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const raw = input as Partial<AgentInvocationRequest>;
+  if (typeof raw.agentId !== "string") return undefined;
+  const out: Record<string, unknown> = { agentId: raw.agentId };
+  // Preserve malformed known keys in the identity so a retry cannot turn a
+  // bad request into an accepted omission. Unknown keys remain intentionally
+  // stripped.
+  for (const key of ["model", "effort", "permissionScope"] as const) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) out[key] = (raw as Record<string, unknown>)[key];
+  }
+  return out as unknown as AgentInvocationRequest;
+}
+
+/**
+ * Resolve the one textual/stable-id agent target allowed by invocation
+ * controls. A duplicate display name, repeated mention, or two agent mentions
+ * is ambiguous and returns no target. Matches are sorted by their position in
+ * the message rather than by directory order, so every caller shares routing
+ * semantics.
+ */
+export function invocationTargetFor(
+  text: string,
+  agents: readonly Pick<AgentDef, "id" | "name">[],
+): ID | undefined {
+  const nameCounts = new Map<string, number>();
+  for (const agent of agents) {
+    const key = agent.name.trim().toLocaleLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  const matches: Array<{ id: ID; at: number }> = [];
+  for (const agent of agents) {
+    if (nameCounts.get(agent.name.trim().toLocaleLowerCase()) !== 1) continue;
+    const tokens = [...new Set([agent.name, agent.id])];
+    for (const token of tokens) {
+      if (!token) continue;
+      const re = new RegExp(`@${escapeRe(token)}(?![\\w-])`, "gi");
+      for (const match of text.matchAll(re)) {
+        matches.push({ id: agent.id, at: match.index ?? -1 });
+      }
+    }
+  }
+  matches.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  if (matches.length !== 1) return undefined;
+  return matches[0]!.id;
 }
 
 /** A person's durable save of one message. The source is re-authorised on each read. */
@@ -3438,6 +3811,37 @@ export interface SavedMessageEntry {
   /** Present only while the owner can still read the source message. */
   message?: Message;
   /** Source thread root, when the saved message is a reply. */
+  threadParentId?: ID;
+}
+
+export type MessageDeliveryStage = "accepted" | "delivered" | "read" | "unknown" | "failed";
+
+/** Author-scoped delivery projection. Recipient ids are present only for a direct human DM. */
+export interface MessageStatus {
+  messageId: ID;
+  clientMessageId?: ID;
+  channelId: ID;
+  stage: MessageDeliveryStage;
+  acceptedAt?: number;
+  deliveredAt?: number;
+  readAt?: number;
+  deliveredCount?: number;
+  readCount?: number;
+  recipientCount?: number;
+  /** Exact human state is allowed only for a direct human conversation. */
+  recipients?: Array<{ recipientId: ID; stage: "delivered" | "read"; at: number }>;
+}
+
+/** A durable pin shared by every current member of one non-DM channel. */
+export interface ChannelPinEntry {
+  id: ID;
+  channelId: ID;
+  messageId: ID;
+  pinnedAt: number;
+  pinnedById?: ID;
+  pinnedByName?: string;
+  state: "active" | "deleted" | "inaccessible";
+  message?: Message;
   threadParentId?: ID;
 }
 
@@ -3499,8 +3903,10 @@ export interface EverywhereHit {
 /** Where one person has read up to in one conversation, and what is left. */
 export interface UnreadEntry {
   channelId: ID;
-  /** everything at or before this moment has been seen */
+  /** everything at or before this cursor has been seen */
   lastReadTs: number;
+  /** id breaks same-millisecond ties; absent only on legacy relay rows */
+  lastReadId?: ID;
   /** messages after it that this person did not write */
   unread: number;
   /** how many of those @mention them (or one of their agents) */
@@ -3514,12 +3920,31 @@ export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : neve
 
 type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
-  | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
+  | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[];
+      /** Optional validated controls for the agent explicitly mentioned here. */
+      invocation?: AgentInvocationRequest;
+      /** Stable id for retrying one accepted send after a lost acknowledgement. */
+      clientMessageId?: ID }
+  /** Durable composer draft operations are authenticated to the socket user. */
+  | { type: "draftList"; channelId?: ID; threadId?: ID }
+  | { type: "draftUpdate"; channelId: ID; threadId?: ID; text: string; replyTo?: ID; attachments: DraftAttachment[] }
+  | { type: "draftReconcile"; channelId?: ID; threadId?: ID }
+  | { type: "draftReclaim"; channelId: ID; threadId?: ID; attachmentIds?: ID[] }
+  | { type: "draftRemove"; channelId: ID; threadId?: ID }
+  /** Live human typing is a request-independent, non-durable signal. */
+  | { type: "typing"; channelId: ID; typing: boolean }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
   | { type: "addMembers"; channelId: ID; memberIds: ID[] }
   // ---- channels as real things (docs/plans/chat-basics-handoff.md §7) ----
   /** Set what a room is for and what it is about. Absent field = leave alone. */
   | { type: "setChannelInfo"; channelId: ID; description?: string; topic?: string }
+  /** Read effective per-agent memory rules for a conversation. */
+  | { type: "channelMemoryPolicies"; channelId: ID }
+  /** Owner/admin only. `expectedRevision` makes stale-window writes explicit. */
+  | {
+      type: "setChannelMemoryPolicy"; channelId: ID; agentId: ID;
+      mode: ChannelMemoryMode; expectedRevision?: number;
+    }
   /** Open a room to browse-and-join, or shut it again. */
   | { type: "setChannelVisibility"; channelId: ID; visibility: ChannelVisibility }
   /** Retire a room (or bring it back). Archived is READ-ONLY, never deleted. */
@@ -3586,12 +4011,17 @@ type ClientFrameBase =
   | { type: "deleteMessage"; messageId: ID }
   /** The whole of one thread: the message that started it and every reply. */
   | { type: "thread"; messageId: ID; limit?: number }
+  /** Explicitly ask one in-room agent for a provider-backed summary of a thread. */
+  | { type: "threadSummary"; channelId: ID; threadId: ID; sourceMessageId: ID; agentId: ID }
   /** Ask for this person's durable saved-message queue. */
   | { type: "listSaved"; limit?: number; beforeSavedAt?: number; beforeMessageId?: ID }
   /** Save one readable message; repeating the request is idempotent. */
   | { type: "saveMessage"; messageId: ID; note?: string; remindAt?: number }
   /** Remove one of this person's saves; repeating the request is idempotent. */
   | { type: "unsaveMessage"; messageId: ID }
+  | { type: "listChannelPins"; channelId: ID; limit?: number; beforePinnedAt?: number; beforeMessageId?: ID }
+  | { type: "pinMessage"; channelId: ID; messageId: ID }
+  | { type: "unpinMessage"; channelId: ID; messageId: ID }
   /** Park a file on the hub. Answered with an `attachment` frame carrying its id. */
   | { type: "uploadAttachment"; channelId: ID; name: string; dataBase64: string; mime?: string }
   /**
@@ -3635,6 +4065,8 @@ type ClientFrameBase =
   | { type: "artifactWorkspace"; before?: number; beforeId?: ID; limit?: number }
   /** One artifact and its whole version history, by id. */
   | { type: "artifact"; artifactId: ID }
+  /** Resolve message-text links against the reader's current access. */
+  | { type: "richLinkPreviews"; messageId: ID; refs: RichLinkRef[] }
   /** Owner/admin only: narrow this whole chain, or restore room access. */
   | { type: "setArtifactAccess"; artifactId: ID; access: ArtifactAccess }
   /**
@@ -3647,7 +4079,13 @@ type ClientFrameBase =
    */
   | { type: "artifactTicket"; artifactId: ID; version?: number }
   /** "I have read this conversation up to here" — kept on the account, not the machine. */
-  | { type: "markRead"; channelId: ID; ts?: number }
+  | { type: "markRead"; channelId: ID; ts?: number; messageId?: ID }
+  /** Author-only recovery query for a lost message acknowledgement. */
+  | { type: "messageStatus"; messageId?: ID; clientMessageId?: ID }
+  /** Authenticated human recipient receipt; the relay derives recipient identity. */
+  | { type: "messageReceipt"; channelId: ID; messageId: ID; status: "delivered" | "read"; ts?: number; messageIdCursor?: ID }
+  /** Compatibility spelling for clients that call the frame a human receipt. */
+  | { type: "humanReceipt"; channelId: ID; messageId: ID; status: "delivered" | "read"; ts?: number; messageIdCursor?: ID }
   /** Ask for this person's durable mention/thread-reply inbox. */
   | { type: "notifications"; includeDismissed?: boolean; limit?: number }
   /** Mark one durable inbox row read; the relay checks recipient ownership. */
@@ -3655,7 +4093,7 @@ type ClientFrameBase =
   /** Hide one durable inbox row. */
   | { type: "dismissNotification"; notificationId: ID }
   // engine-host only: post a message authored by one of the owner's agents
-  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID }
+  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID; responseTriggerMessageId?: ID }
   /**
    * engine-host only in practice: put an emoji on a message AS ONE OF YOUR
    * AGENTS — "picked it up", "working", "done" (his item 5).
@@ -3703,13 +4141,15 @@ type ClientFrameBase =
    * survives — this is a preview of it, never a replacement for it.
    */
   | { type: "agentSteps"; agentId: ID; channelId: ID; messageId: ID; steps?: RunStep[]; done?: boolean }
+  /** ENGINE-HOST ONLY: genuine provider response text increments. */
+  | { type: "agentResponse"; event: AgentResponseStreamEvent }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
   // behalf of whoever typed "!bg …", so without it the relay would credit the
   // engine's own account (the owner) for a friend's request. Only an engine
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID; deadlineAt?: number; needsApproval?: boolean; action?: string; causedByHook?: boolean }
   /**
    * engine (agent owner) only. `summary` follows the same sentence-vs-silence
    * rule as every other optional field in this protocol: ABSENT means "I am not
@@ -3733,7 +4173,19 @@ type ClientFrameBase =
   | { type: "runWorkflow"; workflowId: ID }
   | { type: "stopWorkflow"; workflowRunId: ID }
   | { type: "retryWorkflow"; workflowRunId: ID; stepId: ID }
-  | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
+  | {
+      type: "decideApproval"; approvalId: ID;
+      decision: ApprovalCheckpointDecision;
+      /** Required for checkpoint mutations from the current card. */
+      expectedRevision?: number;
+      approvalEpoch?: string;
+      /** Required for `edit` and `question`; ignored for approve/reject. */
+      instructions?: string;
+      question?: string;
+    }
+  /** Explicit aliases keep mobile/desktop callers readable while sharing the same gate. */
+  | { type: "editApproval"; approvalId: ID; instructions: string; expectedRevision?: number; approvalEpoch?: string }
+  | { type: "askApprovalQuestion"; approvalId: ID; question: string; expectedRevision?: number; approvalEpoch?: string }
   /**
    * ENGINE-HOST ONLY: an agent is MID-RUN and has reached one specific thing it
    * may not do on its own. "May I push this branch?"
@@ -3964,6 +4416,8 @@ type ClientFrameBase =
    * report, not a permission. It is scrubbed again on the way out.
    */
   | { type: "runRecorded"; record: RunRecord }
+  /** ENGINE-HOST ONLY: one explicit summary turn produced a bounded result. */
+  | { type: "threadSummaryResult"; result: ThreadSummaryResult }
   /**
    * "What has this agent been doing?" (`agentId`, owner only), or "what did
    * this job actually do?" (`taskId`, anyone who can see the conversation).
@@ -3972,6 +4426,10 @@ type ClientFrameBase =
   | { type: "runList"; agentId?: ID; taskId?: ID; limit?: number }
   /** One run, in full. The id is enough: who may see it is read from the record. */
   | { type: "runDetail"; runId: string }
+  /** Recover a failed/cancelled/refused run. The relay re-checks access and policy at action time. */
+  | { type: "runRecovery"; runId: string; mode: RecoveryMode; checkpointId?: string; approvalEpoch: string }
+  /** Compare exactly two runs the caller is allowed to read. */
+  | { type: "runCompare"; leftRunId: string; rightRunId: string }
   /**
    * "WHAT ARE MY AGENTS COSTING ME, AND WHAT IS WASTEFUL ABOUT IT?"
    *
@@ -4029,6 +4487,17 @@ type ClientFrameBase =
 
 /** Every client request may opt into direct-answer/refusal correlation. */
 export type ClientFrame = WithRequestId<ClientFrameBase>;
+
+/** A human's live typing state. It is never part of `WorldState` or history. */
+export interface HumanTyping {
+  channelId: ID;
+  userId: ID;
+  /** Stamped by the relay from its stored user record; clients never author this. */
+  userName: string;
+  typing: boolean;
+  /** Relay expiry for an active signal; absent on an explicit stop. */
+  expiresAt?: number;
+}
 
 export type AgentStatus = "idle" | "working" | "braked";
 
@@ -4193,6 +4662,8 @@ export interface WorldState {
   users: User[];
   agents: AgentDef[];
   channels: Channel[];
+  /** Effective channel+agent memory policies visible to this account. */
+  channelMemoryPolicies?: ChannelMemoryPolicy[];
   /** most recent messages per channel */
   messages: Message[];
   agentStatus: Record<ID, AgentStatus>;
@@ -4221,6 +4692,8 @@ export interface WorldState {
    * follows them between machines (absent on a relay older than this round).
    */
   unread?: UnreadEntry[];
+  /** Accepted/delivered/read state for messages authored by this person only. */
+  messageStatuses?: MessageStatus[];
   /**
    * WHAT THE HUB CHANGED ABOUT HIS AGENTS WHILE HE WAS NOT LOOKING.
    *
@@ -4271,8 +4744,17 @@ export interface ReachCatchupAgent {
 
 export type ServerFrame =
   | { type: "welcome"; state: WorldState }
-  | { type: "message"; message: Message; tempId?: string }
+  | { type: "message"; message: Message; tempId?: string; requestId?: ID }
+  | { type: "messageStatus"; status: MessageStatus; requestId?: ID }
+  | { type: "messageReceipt"; status: MessageStatus; requestId?: ID }
+  | { type: "drafts"; drafts: ChatDraft[]; requestId?: ID }
+  | { type: "draftChanged"; draft: ChatDraft; requestId?: ID }
+  | { type: "draftRemoved"; channelId: ID; threadId?: ID; requestId?: ID }
+  /** Ephemeral human typing; request-independent and never persisted. */
+  | { type: "typing"; typing: HumanTyping }
   | { type: "channel"; channel: Channel }
+  | { type: "channelMemoryPolicies"; channelId: ID; policies: ChannelMemoryPolicy[]; requestId?: ID }
+  | { type: "channelMemoryPolicy"; policy: ChannelMemoryPolicy; requestId?: ID }
   | { type: "agent"; agent: AgentDef }
   | { type: "agentDeleted"; agentId: ID }
   /**
@@ -4331,11 +4813,17 @@ export type ServerFrame =
    * "what did it do?". This is only the waiting made visible.
    */
   | { type: "liveSteps"; live: LiveRunSteps }
+  /** Ephemeral provider response preview; never persisted or counted unread. */
+  | { type: "agentResponse"; stream: AgentResponseStreamEvent }
   /** A message changed — edited, deleted, or given its first attachment. */
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
+  /** The relay asks the owner's engine to produce one explicit thread summary. */
+  | { type: "threadSummaryRequest"; request: ThreadSummaryRequest }
+  /** Provider-backed summary card; arrays are empty unless status is ready. */
+  | { type: "threadSummary"; summary: ThreadSummaryResult; requestId?: ID }
   /** A parked file, ready to be named in a `send`. Goes only to the uploader. */
-  | { type: "attachment"; attachment: Attachment }
+  | { type: "attachment"; attachment: Attachment; requestId?: ID }
   /**
    * Permission to fetch ONE file, ONCE, for a few seconds. Goes only to the
    * socket that asked. `url` is relative to the hub's own address — join it to
@@ -4365,6 +4853,8 @@ export type ServerFrame =
       /** true only when more valid relation rows exist beyond the shared cap */
       relationsTruncated?: true;
     }
+  /** Access-projected compact metadata; inaccessible refs are omitted. */
+  | { type: "richLinkPreviews"; messageId: ID; previews: RichLinkPreview[]; requestId?: ID }
   /** Answers `artifacts`. Newest change first. */
   | { type: "artifacts"; channelId: ID; artifacts: Artifact[] }
   /** Answers `artifactWorkspace`, with a stable updatedAt/id cursor. */
@@ -4403,10 +4893,11 @@ export type ServerFrame =
   | { type: "notificationUpdated"; entry: NotificationInboxEntry }
   /** Durable saved-message answer/push, scoped to the authenticated person. */
   | { type: "savedMessages"; entries: SavedMessageEntry[]; revision?: number; hasMore?: boolean; nextSavedAt?: number; nextMessageId?: ID; requestId?: ID }
+  | { type: "channelPins"; channelId: ID; entries: ChannelPinEntry[]; revision?: number; hasMore?: boolean; nextPinnedAt?: number; nextMessageId?: ID; requestId?: ID }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption
-  | { type: "task"; task: Task }
+  | { type: "task"; task: Task; requestId?: ID }
   | { type: "approval"; approval: Approval }
   | { type: "workflows"; workflows: Workflow[]; runs: WorkflowRun[]; requestId?: ID }
   | { type: "workflow"; workflow: Workflow; requestId?: ID }
@@ -4484,6 +4975,8 @@ export type ServerFrame =
   | { type: "run"; record: RunRecord }
   /** Answers `runList`. Echoes back which question it is answering. */
   | { type: "runs"; agentId?: ID; taskId?: ID; runs: RunListEntry[] }
+  | { type: "runRecovery"; runId: string; decision: RecoveryDecision; requestId?: ID; pending?: boolean; problem?: string }
+  | { type: "runComparison"; comparison: RunComparison; requestId?: ID }
   /**
    * Answers `spending`. One row per agent that has actually taken a turn in the
    * period — an agent with nothing recorded is not a row, because a row of
@@ -4570,6 +5063,8 @@ export type ServerFrame =
    * task and the context pointer.
    */
   | { type: "handoffReceived"; handoff: AgentHandoff }
+  /** relay -> the owner's engine: execute only after fresh auth/policy checks. */
+  | { type: "runRecoveryRequested"; request: RecoveryRequest }
   | {
       type: "error";
       error: string;
@@ -4801,6 +5296,16 @@ export const ATTACHMENT_LIMITS = {
   parkedTtlMs: 24 * 60 * 60 * 1000,
   /** most uploads one person may start in a minute */
   uploadsPerMinute: 30,
+} as const;
+
+/** Bounds for durable draft rows and their retry ledger. */
+export const DRAFT_LIMITS = {
+  perUser: 100,
+  attachmentCount: ATTACHMENT_LIMITS.perMessage,
+  /** abandoned text/metadata rows are retained for one month at most */
+  retentionMs: 30 * 24 * 60 * 60 * 1000,
+  receiptRetentionMs: 30 * 24 * 60 * 60 * 1000,
+  receiptPerUser: 512,
 } as const;
 
 /**
@@ -5223,6 +5728,8 @@ export interface MemoryNote {
   runId?: string;
   /** `agent` for the agent itself, `owner` for the person, `system` for the engine */
   source: "agent" | "owner" | "system";
+  /** Present for a note created from a channel; absent is the existing global agent memory. */
+  channelId?: ID;
 }
 
 /**
@@ -5286,6 +5793,102 @@ export function findArtifactRefs(text: unknown): ArtifactRef[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(ref);
+  }
+  return out;
+}
+
+// ---------- access-projected links in message text ----------
+//
+// Rich cards are deliberately a request/response projection.  The text parser
+// only identifies bounded, stable references; title, state and owner all come
+// from the relay after it has checked the reader's current access.  A URL that
+// is not an exact stored project item therefore remains an ordinary safe link.
+
+export type RichLinkKind = "task" | "run" | "artifact" | "decision" | "projectItem" | "url";
+
+export type RichLinkRef =
+  | { kind: "task" | "run" | "artifact" | "decision"; id: ID; version?: number }
+  | { kind: "projectItem"; projectId: ID; itemKind: ProjectItemKind; number: number }
+  | { kind: "url"; url: string };
+
+export interface RichLinkPreview {
+  /** The authorized target. For a matched external URL this is projectItem. */
+  ref: Exclude<RichLinkRef, { kind: "url" }>;
+  /** Correlation facts used only for client-side cache invalidation. */
+  channelId?: ID;
+  ownerId?: ID;
+  /** The exact source URL when a stored project item matched message text. */
+  sourceUrl?: string;
+  title: string;
+  status?: TaskStatus | RunOutcome | ProjectItemState | ForumStatus;
+  owner?: string;
+}
+
+export const RICH_LINK_LIMITS = {
+  refsPerMessage: 16,
+  url: 1000,
+} as const;
+
+function richLinkRefKey(ref: RichLinkRef): string {
+  return ref.kind === "url"
+    ? `url:${ref.url}`
+    : ref.kind === "projectItem"
+      ? `projectItem:${ref.projectId}:${ref.itemKind}:${ref.number}`
+      : `${ref.kind}:${ref.id}${ref.version === undefined ? "" : `@${ref.version}`}`;
+}
+
+/** Stable key for correlating a preview with its source text. */
+export function richLinkKey(ref: RichLinkRef): string {
+  return richLinkRefKey(ref);
+}
+
+/** Turn one internal reference back into its canonical message token. */
+export function richLinkToken(ref: RichLinkRef): string | undefined {
+  switch (ref.kind) {
+    case "artifact": return artifactRef(ref.id, ref.version);
+    case "task": return `cloud9://task/${ref.id}`;
+    case "run": return `cloud9://run/${ref.id}`;
+    case "decision": return `cloud9://decision/${ref.id}`;
+    case "projectItem": return `cloud9://project/${ref.projectId}/${ref.itemKind}/${ref.number}`;
+    case "url": return ref.url;
+  }
+}
+
+function parseRichLinkToken(raw: string): RichLinkRef | undefined {
+  if (raw.startsWith(ARTIFACT_REF_SCHEME)) {
+    const parsed = parseArtifactRef(raw);
+    return parsed ? { kind: "artifact", id: parsed.artifactId, ...(parsed.version === undefined ? {} : { version: parsed.version }) } : undefined;
+  }
+  const match = raw.match(/^cloud9:\/\/(task|run|decision)\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/);
+  if (match && isSafeStoredId(match[2])) return { kind: match[1] as "task" | "run" | "decision", id: match[2] };
+  const project = raw.match(/^cloud9:\/\/project\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/(pull|issue)\/([1-9][0-9]{0,8})$/);
+  if (project && isSafeStoredId(project[1])) {
+    const number = Number(project[3]);
+    if (Number.isSafeInteger(number) && number > 0) return { kind: "projectItem", projectId: project[1], itemKind: project[2] as ProjectItemKind, number };
+  }
+  return undefined;
+}
+
+/** Parse bounded internal refs plus ordinary HTTP(S) URLs from one message. */
+export function findRichLinkRefs(text: unknown): RichLinkRef[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const out: RichLinkRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: RichLinkRef): void => {
+    if (out.length >= RICH_LINK_LIMITS.refsPerMessage) return;
+    const key = richLinkRefKey(ref);
+    if (seen.has(key)) return;
+    seen.add(key); out.push(ref);
+  };
+  const tokens = /cloud9:\/\/(?:artifact|task|run|decision)\/[A-Za-z0-9][A-Za-z0-9._-]*(?:@\d+)?|cloud9:\/\/project\/[A-Za-z0-9][A-Za-z0-9._-]*\/(?:pull|issue)\/[1-9][0-9]{0,8}|https?:\/\/[^\s<>()]+/gi;
+  for (const hit of text.match(tokens) ?? []) {
+    const token = hit.replace(/[.,!?;:]+$/, "");
+    if (/^https?:\/\//i.test(token)) {
+      if (token.length <= RICH_LINK_LIMITS.url) add({ kind: "url", url: token });
+    } else {
+      const parsed = parseRichLinkToken(token);
+      if (parsed) add(parsed);
+    }
   }
   return out;
 }
@@ -5624,6 +6227,152 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
 }
 
 /**
+ * Validate one message's optional invocation controls against the authoritative
+ * agent and provider catalog. Unknown catalogs still get the model-id shape
+ * check; they never turn an arbitrary string into a command-line argument.
+ */
+export function validateAgentInvocation(
+  agent: Pick<AgentDef, "id" | "provider">,
+  request: unknown,
+  models?: readonly string[],
+): string | null {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return "that agent invocation is not valid";
+  }
+  const input = request as Partial<AgentInvocationRequest>;
+  if (input.agentId !== agent.id) return "that invocation does not name this agent";
+  if (input.model !== undefined) {
+    if (typeof input.model !== "string" || input.model.length === 0 || !MODEL_ID_RE.test(input.model)) {
+      return "that model name isn't a valid model id";
+    }
+    if (!models || models.length === 0) {
+      return "the provider model catalog is unavailable; leave the model override blank";
+    }
+    if (!models.includes(input.model)) {
+      return "that model isn't one this app offers";
+    }
+  }
+  if (input.effort !== undefined && !isAgentEffort(input.effort)) {
+    return "that isn't one of the thinking-time settings this app offers";
+  }
+  if (input.permissionScope !== undefined
+    && input.permissionScope !== "agent" && input.permissionScope !== "readOnly") {
+    return "that permission scope is not supported";
+  }
+  return null;
+}
+
+/** Validate the bounded public receipt persisted on a run. */
+export function validateAgentInvocationReceipt(receipt: unknown, expectedAgentId?: ID): string | null {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return "that invocation receipt is not valid";
+  }
+  const r = receipt as Partial<AgentInvocationReceipt>;
+  if (typeof r.agentId !== "string" || r.agentId.length === 0 || r.agentId.length > 64) {
+    return "that invocation receipt has no usable agent";
+  }
+  if (expectedAgentId !== undefined && r.agentId !== expectedAgentId) {
+    return "that invocation receipt belongs to a different agent";
+  }
+  if (r.model !== undefined && (typeof r.model !== "string" || !MODEL_ID_RE.test(r.model))) {
+    return "that invocation receipt has an unusable model";
+  }
+  if (r.effort !== undefined && !isAgentEffort(r.effort)) {
+    return "that invocation receipt has an unusable effort";
+  }
+  if (r.permissionScope !== "agent" && r.permissionScope !== "readOnly") {
+    return "that invocation receipt has an unusable permission scope";
+  }
+  if (validateTrust(r.trust)) return "that invocation receipt has an unusable trust setting";
+  if (!r.abilities || typeof r.abilities !== "object" || Array.isArray(r.abilities)) {
+    return "that invocation receipt has no usable abilities";
+  }
+  const abilityKeys = new Set([
+    "webSearch", "files", "schedules", "background", "helpers", "commands", "wholeComputer", "connections",
+  ]);
+  for (const [key, value] of Object.entries(r.abilities)) {
+    if (!abilityKeys.has(key) || typeof value !== "boolean") {
+      return "that invocation receipt has unusable abilities";
+    }
+  }
+  for (const [key, value] of [["webSearch", r.abilities.webSearch], ["files", r.abilities.files],
+    ["schedules", r.abilities.schedules], ["background", r.abilities.background]] as const) {
+    if (typeof value !== "boolean") return `that invocation receipt is missing ${key}`;
+  }
+  if (r.permissionScope === "readOnly") {
+    if (r.trust !== "askEveryTime") return "a read-only invocation must keep ask-every-time trust";
+    if (Object.values(r.abilities).some(value => value !== false)) {
+      return "a read-only invocation cannot carry abilities that act or reach outside this computer";
+    }
+  }
+  if (r.requestedModel !== undefined
+    && (typeof r.requestedModel !== "string" || !MODEL_ID_RE.test(r.requestedModel))) {
+    return "that invocation receipt has an unusable requested model";
+  }
+  if (r.requestedEffort !== undefined && !isAgentEffort(r.requestedEffort)) {
+    return "that invocation receipt has an unusable requested effort";
+  }
+  if (r.requestedModel !== undefined && r.model !== r.requestedModel) {
+    return "that invocation receipt disagrees about its selected model";
+  }
+  if (r.requestedEffort !== undefined) {
+    const effortMatches = r.effort === r.requestedEffort;
+    const isFallback = r.fallback === "provider-default" && r.effort === undefined;
+    if (!effortMatches && !isFallback) {
+      return "that invocation receipt disagrees about its effort fallback";
+    }
+  }
+  if (r.fallback !== undefined && r.fallback !== "provider-default") {
+    return "that invocation receipt has an unusable fallback";
+  }
+  if (r.fallback === "provider-default" && r.effort !== undefined) {
+    return "a provider-default fallback cannot include an applied effort";
+  }
+  if (r.fallback === "provider-default" && r.requestedEffort === undefined) {
+    return "that invocation receipt has a fallback without a requested effort";
+  }
+  const allowed = new Set([
+    "agentId", "model", "effort", "permissionScope", "trust", "abilities",
+    "requestedModel", "requestedEffort", "fallback",
+  ]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that invocation receipt has unknown fields";
+  return null;
+}
+
+/** Apply only narrowing controls; never mutate the stored agent. */
+export function agentForInvocation(
+  agent: AgentDef,
+  request: AgentInvocationRequest | undefined,
+  opts: { effortSupported?: boolean } = {},
+): { agent: AgentDef; receipt?: AgentInvocationReceipt } {
+  if (!request || request.agentId !== agent.id) return { agent };
+  const scope: InvocationPermissionScope = request.permissionScope ?? "agent";
+  const effortApplied = request.effort !== undefined && opts.effortSupported !== false;
+  const readOnly = scope === "readOnly";
+  const effectiveAbilities = readOnly
+    ? Object.fromEntries(Object.keys(agent.abilities ?? {}).map(key => [key, false])) as unknown as AgentAbilities
+    : { ...agent.abilities };
+  const effective: AgentDef = {
+    ...agent,
+    ...(request.model !== undefined ? { model: request.model } : {}),
+    ...(effortApplied ? { effort: request.effort } : opts.effortSupported === false ? { effort: undefined } : {}),
+    ...(readOnly ? { abilities: effectiveAbilities, trust: "askEveryTime" as const } : {}),
+  };
+  const receipt: AgentInvocationReceipt = {
+    agentId: agent.id,
+    ...(effective.model ? { model: effective.model } : {}),
+    ...(effortApplied && request.effort ? { effort: request.effort } : {}),
+    permissionScope: scope,
+    trust: trustOf(effective),
+    abilities: { ...effective.abilities },
+    ...(request.model ? { requestedModel: request.model } : {}),
+    ...(request.effort ? { requestedEffort: request.effort } : {}),
+    ...(!effortApplied && request.effort ? { fallback: "provider-default" as const } : {}),
+  };
+  return { agent: effective, receipt };
+}
+
+/**
  * THE SENTENCE FOR A SAVE THAT ARRIVED IN PIECES. It says what happened and
  * what to do, and it names no fields — the person did not choose a field name,
  * a program did.
@@ -5927,7 +6676,16 @@ export function validateMessageText(text: unknown, allowEmpty = false): string |
  * in the database, so an unbounded one is a way to put a blob in through a path
  * nobody sized. A TLDR is a couple of sentences — this is generous, not tight.
  */
-export const TASK_LIMITS = { summary: 500 } as const;
+export const TASK_LIMITS = { title: 4000, summary: 500 } as const;
+
+/** Check a task title before it is persisted or routed to an engine. */
+export function validateTaskTitle(title: unknown): string | null {
+  if (typeof title !== "string" || title.trim().length === 0) return "a task needs some words";
+  if (title.length > TASK_LIMITS.title) {
+    return `that task title is too long (max ${TASK_LIMITS.title} characters)`;
+  }
+  return null;
+}
 
 /**
  * Check the summary an agent wrote about its own finished job.
@@ -5942,6 +6700,82 @@ export function validateTaskSummary(summary: unknown): string | null {
   if (summary.length > TASK_LIMITS.summary) {
     return `that summary is too long (max ${TASK_LIMITS.summary} characters)`;
   }
+  return null;
+}
+
+function validSummaryId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 96
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** Validate the authenticated, bounded request before it crosses a relay. */
+export function validateThreadSummaryRequest(request: unknown): string | null {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return "that thread summary request is not valid";
+  }
+  const r = request as Partial<ThreadSummaryRequest>;
+  for (const [what, value] of [
+    ["request id", r.requestId], ["channel", r.channelId], ["thread", r.threadId],
+    ["source message", r.sourceMessageId], ["agent", r.agentId], ["requester", r.requesterId],
+  ] as const) {
+    if (!validSummaryId(value)) return `that summary has no usable ${what}`;
+  }
+  const allowed = new Set(["requestId", "channelId", "threadId", "sourceMessageId", "agentId", "requesterId"]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that summary request has unknown fields";
+  return null;
+}
+
+/** Validate provider-derived facts before they are persisted or projected. */
+export function validateThreadSummaryResult(result: unknown): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return "that thread summary result is not valid";
+  }
+  const r = result as Partial<ThreadSummaryResult>;
+  const requestProblem = validateThreadSummaryRequest({
+    requestId: r.requestId, channelId: r.channelId, threadId: r.threadId,
+    sourceMessageId: r.sourceMessageId, agentId: r.agentId, requesterId: r.requesterId,
+  });
+  if (requestProblem) return requestProblem;
+  if (r.status !== "pending" && r.status !== "ready" && r.status !== "refused" && r.status !== "unavailable") {
+    return "that summary has an unknown state";
+  }
+  if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt)) return "that summary has no usable timestamp";
+  const list = (name: string, value: unknown, max: number, chars: number): string | null => {
+    if (!Array.isArray(value) || value.length > max) return `that summary has too many ${name}`;
+    if (value.some(item => typeof item !== "string" || item.trim().length === 0 || item.length > chars)) {
+      return `that summary has unusable ${name}`;
+    }
+    return null;
+  };
+  for (const [name, value] of [["decisions", r.decisions], ["open questions", r.openQuestions], ["next actions", r.nextActions]] as const) {
+    const bad = list(name, value, THREAD_SUMMARY_LIMITS.itemCount, THREAD_SUMMARY_LIMITS.itemChars);
+    if (bad) return bad;
+  }
+  if (!Array.isArray(r.sources) || r.sources.length > THREAD_SUMMARY_LIMITS.sourceCount) return "that summary has too many sources";
+  for (const source of r.sources) {
+    if (!source || typeof source !== "object" || Array.isArray(source)
+      || !validSummaryId((source as ThreadSummarySource).messageId)
+      || typeof (source as ThreadSummarySource).label !== "string"
+      || !(source as ThreadSummarySource).label.trim()
+      || (source as ThreadSummarySource).label.length > THREAD_SUMMARY_LIMITS.sourceLabel) {
+      return "that summary has an unusable source";
+    }
+    if (Object.keys(source).some(key => key !== "messageId" && key !== "label")) return "that summary source has unknown fields";
+  }
+  if (r.runId !== undefined && !validSummaryId(r.runId)) return "that summary has an unusable run id";
+  if (r.error !== undefined && (typeof r.error !== "string" || r.error.length > THREAD_SUMMARY_LIMITS.error)) {
+    return "that summary has an unusable error";
+  }
+  if (r.status === "ready" && r.error !== undefined) return "a ready summary cannot carry an error";
+  if (r.status !== "ready" && ((r.decisions as string[]).length !== 0 || (r.openQuestions as string[]).length !== 0
+    || (r.nextActions as string[]).length !== 0 || (r.sources as ThreadSummarySource[]).length !== 0)) {
+    return "a non-ready summary cannot carry provider facts";
+  }
+  const allowed = new Set([
+    "requestId", "channelId", "threadId", "sourceMessageId", "agentId", "requesterId",
+    "status", "updatedAt", "decisions", "openQuestions", "nextActions", "sources", "runId", "error",
+  ]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that summary result has unknown fields";
   return null;
 }
 
@@ -6242,6 +7076,117 @@ function lastSegment(p: string): string {
   return parts[parts.length - 1] || "";
 }
 
+/*
+ * The wire boundary is a schema boundary, not a convenient place to spread a
+ * provider object. Keep the allow-lists next to the projection and validator
+ * so a field added to RunRecord cannot silently become room-visible metadata.
+ */
+const RUN_STEP_KINDS = new Set<RunStepKind>([
+  "command", "read", "write", "search", "web", "tool", "thinking", "message", "note",
+]);
+const RUN_RECORD_FIELDS = new Set([
+  "id", "kind", "agentId", "agentName", "provider", "model", "actualModel", "channelId", "taskId",
+  "requestedBy", "requestedByKind", "ask", "startedAt", "finishedAt", "durationMs", "cliDurationMs",
+  "outcome", "error", "steps", "tests", "usage", "sessionId", "effort", "branch", "commit", "files",
+  "pullRequest", "artifacts", "checkpointId", "priorRunId", "replyTo", "invocation", "resumed", "numTurns",
+  "replyChars", "events", "truncated", "trust", "ownerSetup", "capStop", "fellBackTo", "planOnly",
+]);
+const RUN_STEP_FIELDS = new Set(["seq", "kind", "label", "detail", "ok"]);
+const RUN_TEST_FIELDS = new Set(["command", "ok"]);
+const RUN_ARTIFACT_FIELDS = new Set(["id", "name", "version", "size", "available"]);
+const RUN_USAGE_FIELDS = new Set([
+  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "costUsd", "handedToIt",
+]);
+const RUN_CAP_STOP_FIELDS = new Set(["which", "capUsd"]);
+
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function publicText(value: unknown, max: number): string | undefined {
+  return typeof value === "string" ? redactForSharing(value, max) : undefined;
+}
+
+function publicNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function publicStep(value: unknown): RunStep | undefined {
+  const raw = plainObject(value);
+  if (!raw || !Number.isSafeInteger(raw.seq) || (raw.seq as number) < 1
+    || !RUN_STEP_KINDS.has(raw.kind as RunStepKind) || typeof raw.label !== "string") return undefined;
+  const out: RunStep = {
+    seq: raw.seq as number,
+    kind: raw.kind as RunStepKind,
+    label: redactForSharing(raw.label, RUN_LIMITS.label),
+  };
+  if (typeof raw.detail === "string") out.detail = redactForSharing(raw.detail, RUN_LIMITS.detail);
+  if (typeof raw.ok === "boolean") out.ok = raw.ok;
+  return out;
+}
+
+function publicTest(value: unknown): RunTestFact | undefined {
+  const raw = plainObject(value);
+  if (!raw || typeof raw.command !== "string") return undefined;
+  return {
+    command: redactForSharing(raw.command, RUN_LIMITS.test),
+    ...(typeof raw.ok === "boolean" ? { ok: raw.ok } : {}),
+  };
+}
+
+function publicArtifact(value: unknown): NonNullable<RunRecord["artifacts"]>[number] | undefined {
+  const raw = plainObject(value);
+  if (!raw || typeof raw.id !== "string" || typeof raw.name !== "string") return undefined;
+  const out: NonNullable<RunRecord["artifacts"]>[number] = {
+    id: redactForSharing(raw.id, 120), name: redactForSharing(raw.name, 120),
+  };
+  if (Number.isSafeInteger(raw.version) && (raw.version as number) >= 1) out.version = raw.version as number;
+  if (Number.isSafeInteger(raw.size) && (raw.size as number) >= 0) out.size = raw.size as number;
+  if (typeof raw.available === "boolean") out.available = raw.available;
+  return out;
+}
+
+function publicUsage(value: unknown): RunUsage | undefined {
+  const raw = plainObject(value);
+  if (!raw) return undefined;
+  const out: RunUsage = {};
+  for (const key of ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "costUsd", "handedToIt"] as const) {
+    const number = publicNumber(raw[key]);
+    if (number !== undefined) out[key] = number;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function publicCapStop(value: unknown): RunRecord["capStop"] | undefined {
+  const raw = plainObject(value);
+  if (!raw || (raw.which !== "perJob" && raw.which !== "perMonth")
+    || typeof raw.capUsd !== "number" || !Number.isFinite(raw.capUsd)) return undefined;
+  return { which: raw.which, capUsd: raw.capUsd };
+}
+
+function publicInvocation(value: unknown, agentId: unknown): AgentInvocationReceipt | undefined {
+  if (validateAgentInvocationReceipt(value, typeof agentId === "string" ? agentId : undefined)) return undefined;
+  const raw = value as AgentInvocationReceipt;
+  const abilities: AgentAbilities = {
+    webSearch: raw.abilities.webSearch, files: raw.abilities.files,
+    schedules: raw.abilities.schedules, background: raw.abilities.background,
+    ...(typeof raw.abilities.helpers === "boolean" ? { helpers: raw.abilities.helpers } : {}),
+    ...(typeof raw.abilities.commands === "boolean" ? { commands: raw.abilities.commands } : {}),
+    ...(typeof raw.abilities.wholeComputer === "boolean" ? { wholeComputer: raw.abilities.wholeComputer } : {}),
+    ...(typeof raw.abilities.connections === "boolean" ? { connections: raw.abilities.connections } : {}),
+  };
+  return {
+    agentId: raw.agentId,
+    ...(raw.model !== undefined ? { model: raw.model } : {}),
+    ...(raw.effort !== undefined ? { effort: raw.effort } : {}),
+    permissionScope: raw.permissionScope, trust: raw.trust, abilities,
+    ...(raw.requestedModel !== undefined ? { requestedModel: raw.requestedModel } : {}),
+    ...(raw.requestedEffort !== undefined ? { requestedEffort: raw.requestedEffort } : {}),
+    ...(raw.fallback !== undefined ? { fallback: raw.fallback } : {}),
+  };
+}
+
 /**
  * The version of a record that may be shown in chat, sent to a client, or read
  * by a guest. Every free-text field goes through `redactForSharing`.
@@ -6254,16 +7199,175 @@ function lastSegment(p: string): string {
  * before it reaches anybody.
  */
 export function shareableRun(record: RunRecord): RunRecord {
-  return {
-    ...record,
-    ask: redactForSharing(record.ask, RUN_LIMITS.ask),
-    ...(record.error ? { error: redactForSharing(record.error, RUN_LIMITS.error) } : {}),
-    steps: (record.steps ?? []).map(s => ({
-      ...s,
-      label: redactForSharing(s.label, RUN_LIMITS.label),
-      ...(s.detail ? { detail: redactForSharing(s.detail, RUN_LIMITS.detail) } : {}),
-    })),
+  const raw = record as Partial<RunRecord>;
+  const kind = raw.kind === "chat" || raw.kind === "task" || raw.kind === "schedule" ? raw.kind : "chat";
+  const requestedByKind = raw.requestedByKind === "human" || raw.requestedByKind === "agent" || raw.requestedByKind === "schedule"
+    ? raw.requestedByKind : "human";
+  const outcome = raw.outcome === "ok" || raw.outcome === "failed" || raw.outcome === "cancelled" || raw.outcome === "refused"
+    ? raw.outcome : "failed";
+  const out: RunRecord = {
+    id: publicText(raw.id, 180) ?? "",
+    kind,
+    agentId: publicText(raw.agentId, 64) ?? "",
+    agentName: publicText(raw.agentName, AGENT_LIMITS.name) ?? "",
+    provider: publicText(raw.provider, 64) ?? "",
+    requestedBy: publicText(raw.requestedBy, AGENT_LIMITS.name) ?? "",
+    requestedByKind,
+    ask: publicText(raw.ask, RUN_LIMITS.ask) ?? "",
+    startedAt: publicNumber(raw.startedAt) ?? 0,
+    finishedAt: publicNumber(raw.finishedAt) ?? 0,
+    durationMs: publicNumber(raw.durationMs) ?? 0,
+    outcome,
+    steps: Array.isArray(raw.steps) ? raw.steps.map(publicStep).filter((s): s is RunStep => !!s) : [],
+    replyChars: publicNumber(raw.replyChars) ?? 0,
+    events: publicNumber(raw.events) ?? 0,
   };
+  if (typeof raw.model === "string") out.model = redactForSharing(raw.model, 120);
+  if (typeof raw.actualModel === "string") out.actualModel = redactForSharing(raw.actualModel, 120);
+  if (typeof raw.channelId === "string") out.channelId = redactForSharing(raw.channelId, 180);
+  if (typeof raw.taskId === "string") out.taskId = redactForSharing(raw.taskId, 180);
+  if (typeof raw.cliDurationMs === "number" && Number.isFinite(raw.cliDurationMs)) out.cliDurationMs = raw.cliDurationMs;
+  if (typeof raw.error === "string") out.error = redactForSharing(raw.error, RUN_LIMITS.error);
+  if (Array.isArray(raw.tests)) {
+    const tests = raw.tests.slice(0, RUN_LIMITS.tests).map(publicTest).filter((t): t is RunTestFact => !!t);
+    if (tests.length > 0) out.tests = tests;
+  }
+  const usage = publicUsage(raw.usage);
+  if (usage) out.usage = usage;
+  if (typeof raw.sessionId === "string") out.sessionId = redactForSharing(raw.sessionId, 180);
+  if (typeof raw.effort === "string") out.effort = redactForSharing(raw.effort, 32);
+  if (typeof raw.branch === "string") out.branch = redactForSharing(raw.branch, 120);
+  if (typeof raw.commit === "string") out.commit = redactForSharing(raw.commit, 120);
+  if (Array.isArray(raw.files)) {
+    const files = raw.files.slice(0, 64).filter((file): file is string => typeof file === "string")
+      .map(file => redactForSharing(file, 240));
+    if (files.length > 0) out.files = files;
+  }
+  if (typeof raw.pullRequest === "string") out.pullRequest = redactForSharing(raw.pullRequest, 240);
+  if (Array.isArray(raw.artifacts)) {
+    const artifacts = raw.artifacts.slice(0, 32).map(publicArtifact).filter((a): a is NonNullable<RunRecord["artifacts"]>[number] => !!a);
+    if (artifacts.length > 0) out.artifacts = artifacts;
+  }
+  if (typeof raw.checkpointId === "string") out.checkpointId = redactForSharing(raw.checkpointId, 180);
+  if (typeof raw.priorRunId === "string") out.priorRunId = redactForSharing(raw.priorRunId, 180);
+  if (typeof raw.replyTo === "string") out.replyTo = redactForSharing(raw.replyTo, 180);
+  const invocation = publicInvocation(raw.invocation, raw.agentId);
+  if (invocation) out.invocation = invocation;
+  if (typeof raw.resumed === "boolean") out.resumed = raw.resumed;
+  if (typeof raw.numTurns === "number" && Number.isFinite(raw.numTurns)) out.numTurns = raw.numTurns;
+  if (typeof raw.truncated === "boolean") out.truncated = raw.truncated;
+  if (isAgentTrust(raw.trust)) out.trust = raw.trust;
+  if (typeof raw.ownerSetup === "boolean") out.ownerSetup = raw.ownerSetup;
+  const capStop = publicCapStop(raw.capStop);
+  if (capStop) out.capStop = capStop;
+  if (typeof raw.fellBackTo === "string") out.fellBackTo = redactForSharing(raw.fellBackTo, 120);
+  if (typeof raw.planOnly === "boolean") out.planOnly = raw.planOnly;
+  return out;
+}
+
+/**
+ * Pull only named test runners out of provider-reported command steps.
+ *
+ * This is a classification of an observed command, not a claim that a test
+ * suite passed. `ok` is copied only when the provider supplied it. Keeping the
+ * rule here lets the engine and desktop use the same bounded vocabulary and
+ * prevents a sentence in an agent reply from becoming a test receipt.
+ */
+export function testFactsFromSteps(steps: readonly RunStep[]): RunTestFact[] {
+  const seen = new Set<string>();
+  const out: RunTestFact[] = [];
+  for (const step of steps) {
+    if (step.kind !== "command") continue;
+    // Providers put the executable in either field depending on the event
+    // shape. Inspect each field as a command on its own: joining label prose
+    // to detail made `echo npm test` and quoted sentences look executable.
+    const candidates = [step.detail, step.label].filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0);
+    const command = candidates.find(testCommandHasRunner);
+    if (!command) continue;
+    const normalized = command.replace(/\s+/g, " ").trim();
+    const clipped = normalized.length > RUN_LIMITS.test
+      ? `${normalized.slice(0, RUN_LIMITS.test - 1)}…` : normalized;
+    if (seen.has(clipped)) continue;
+    seen.add(clipped);
+    out.push({ command: clipped, ...(typeof step.ok === "boolean" ? { ok: step.ok } : {}) });
+    if (out.length >= RUN_LIMITS.tests) break;
+  }
+  return out;
+}
+
+/**
+ * Return true only when a shell segment's executable is a known test runner.
+ * This deliberately does not search prose: `echo npm test`, `printf "pytest"`,
+ * and `# npm test` are observations about text, not evidence that tests ran.
+ */
+function testCommandHasRunner(raw: string): boolean {
+  const segments = shellCommandSegments(raw);
+  for (const tokens of segments) {
+    const command = skipTestWrappers(tokens);
+    if (!command) continue;
+    const [exe, next] = command;
+    const name = exe.replace(/.*[\\/]/, "").toLowerCase();
+    if (name === "npm" && (next === "test" || next === "t" || (next === "run" && command[2] === "test"))) return true;
+    if ((name === "yarn" || name === "pnpm")
+      && (next === "test" || (next === "run" && command[2] === "test"))) return true;
+    if (name === "npx" && ["vitest", "jest", "mocha"].includes(next?.toLowerCase() ?? "")) return true;
+    if (["vitest", "jest", "mocha", "pytest", "py.test", "unittest", "rspec", "phpunit", "ctest", "tox"].includes(name)) return true;
+    if ((name === "go" || name === "cargo" || name === "dotnet" || name === "gradle" || name === "mvn" || name === "make")
+      && next === "test") return true;
+    if (name === "node" && next === "--test") return true;
+    if ((name === "python" || name === "python3") && next === "-m"
+      && ["pytest", "unittest"].includes(command[2]?.toLowerCase() ?? "")) return true;
+  }
+  return false;
+}
+
+/** Split shell operators outside quotes, retaining each segment's tokens. */
+function shellCommandSegments(raw: string): string[][] {
+  const segments: string[][] = [];
+  let tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  const flush = (): void => { if (token) { tokens.push(token); token = ""; } };
+  const cut = (): void => { flush(); if (tokens.length) segments.push(tokens); tokens = []; };
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (escaped) { token += ch; escaped = false; continue; }
+    if (ch === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (ch === quote) quote = undefined; else token += ch; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "#" && token === "") break;
+    if (/\s/.test(ch)) { flush(); continue; }
+    if (ch === ";" || ch === "\n" || (ch === "&" && raw[i + 1] === "&")
+      || (ch === "|" && raw[i + 1] === "|")) {
+      cut(); if (ch !== ";" && ch !== "\n") i++; continue;
+    }
+    token += ch;
+  }
+  cut();
+  return segments;
+}
+
+/** Strip a small, explicit set of harmless shell wrappers before the runner. */
+function skipTestWrappers(tokens: string[]): string[] | undefined {
+  const out = [...tokens];
+  while (out.length > 0) {
+    const name = out[0]!.replace(/.*[\\/]/, "").toLowerCase();
+    if (/^[a-z_][a-z0-9_]*=.*/i.test(out[0]!)) { out.shift(); continue; }
+    if (name === "env" || name === "command" || name === "time" || name === "nice" || name === "nohup") {
+      out.shift();
+      while (out[0]?.startsWith("-") || (out[0] && /^[a-z_][a-z0-9_]*=.*/i.test(out[0]!))) out.shift();
+      continue;
+    }
+    if (name === "timeout") {
+      out.shift();
+      while (out[0]?.startsWith("-") || (out[0] && /^\d+(?:\.\d+)?[smhd]?$/i.test(out[0]!))) out.shift();
+      continue;
+    }
+    return out;
+  }
+  return undefined;
 }
 
 // ---------- reading a run in plain words ----------
@@ -6314,6 +7418,10 @@ export function summarizeRun(record: RunRecord): string {
     return parts.length
       ? `Didn't finish. Got as far as ${parts.join(", ")}, ${time}${money}.${why}`
       : `Didn't finish, ${time}${money}.${why}`;
+  }
+  if (record.outcome === "refused") {
+    const why = record.error ? ` — ${record.error}` : "";
+    return `Didn't start because it was refused, ${time}${why}.`;
   }
   if (parts.length === 0) {
     return `Answered straight from what it knew — no tools used, ${time}${money}.`;
@@ -6379,14 +7487,18 @@ function capitalise(s: string): string {
 export function validateRunRecord(record: unknown): string | null {
   if (!record || typeof record !== "object") return "that isn't a run record";
   const r = record as Partial<RunRecord>;
+  if (Object.keys(r).some(key => !RUN_RECORD_FIELDS.has(key))) return "that run record has unknown fields";
   if (!isSafeStoredId(r.id)) {
     return "that run id isn't usable";
   }
   if (r.kind !== "chat" && r.kind !== "task" && r.kind !== "schedule") {
     return "a run is a chat reply, a job or a scheduled check-in";
   }
-  if (r.outcome !== "ok" && r.outcome !== "failed" && r.outcome !== "cancelled") {
-    return "a run either worked, failed or was stopped";
+  if (r.outcome !== "ok" && r.outcome !== "failed" && r.outcome !== "cancelled" && r.outcome !== "refused") {
+    return "a run either worked, failed or was stopped (or was refused)";
+  }
+  if (r.requestedByKind !== "human" && r.requestedByKind !== "agent" && r.requestedByKind !== "schedule") {
+    return "a run has an unknown requester";
   }
   if (typeof r.agentId !== "string" || r.agentId.length === 0 || r.agentId.length > 64) {
     return "a run belongs to an agent";
@@ -6410,15 +7522,64 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.steps.length > RUN_LIMITS.steps) return "that run has too many steps";
   const badStep = validateSteps(r.steps);
   if (badStep) return badStep;
+  if (r.tests !== undefined && (!Array.isArray(r.tests) || r.tests.length > RUN_LIMITS.tests
+    || r.tests.some(t => !t || typeof t !== "object" || Array.isArray(t)
+      || Object.keys(t).some(key => !RUN_TEST_FIELDS.has(key))
+      || typeof t.command !== "string" || t.command.length > RUN_LIMITS.test
+      || (t.ok !== undefined && typeof t.ok !== "boolean")))) {
+    return "a run's public tests are not usable";
+  }
+  if (r.usage !== undefined) {
+    if (!r.usage || typeof r.usage !== "object" || Array.isArray(r.usage)
+      || Object.keys(r.usage).some(key => !RUN_USAGE_FIELDS.has(key))) {
+      return "a run's usage facts are not usable";
+    }
+    for (const value of Object.values(r.usage)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "a run's usage facts are not usable";
+    }
+  }
   // the trust setting this run took place under — the same three words or
   // nothing at all, so a stored run cannot claim a rule that does not exist
   const badTrust = validateTrust(r.trust);
   if (badTrust) return badTrust;
+  if (r.invocation !== undefined) {
+    const badInvocation = validateAgentInvocationReceipt(r.invocation, r.agentId);
+    if (badInvocation) return badInvocation;
+  }
   // …and whose setup it ran in: a yes/no or nothing at all, never a word that
   // merely looks true. A record that overstates this would tell him a turn was
   // sandboxed when it was not, which is worse than not recording it.
   if (r.ownerSetup !== undefined && typeof r.ownerSetup !== "boolean") {
     return "a run either used your own setup or it didn't";
+  }
+  if (r.capStop !== undefined) {
+    if (!r.capStop || typeof r.capStop !== "object" || Array.isArray(r.capStop)
+      || Object.keys(r.capStop).some(key => !RUN_CAP_STOP_FIELDS.has(key))
+      || (r.capStop.which !== "perJob" && r.capStop.which !== "perMonth")
+      || typeof r.capStop.capUsd !== "number" || !Number.isFinite(r.capStop.capUsd)) {
+      return "a run's spending stop is not usable";
+    }
+  }
+  for (const [what, value, max] of [
+    ["effort", r.effort, 32], ["branch", r.branch, 120], ["commit", r.commit, 120],
+    ["pull request", r.pullRequest, 240], ["checkpoint id", r.checkpointId, 180],
+    ["prior run id", r.priorRunId, 180],
+  ] as const) {
+    if (value !== undefined && (typeof value !== "string" || value.length > max)) return `that ${what} is not usable`;
+  }
+  if (r.replyTo !== undefined && !isSafeStoredId(r.replyTo)) return "that run reply is not usable";
+  if (r.files !== undefined && (!Array.isArray(r.files) || r.files.length > 64 || r.files.some(f => typeof f !== "string" || f.length > 240))) {
+    return "a run's public files are not usable";
+  }
+  if (r.artifacts !== undefined && (!Array.isArray(r.artifacts) || r.artifacts.length > 32 || r.artifacts.some(a => {
+    if (!a || typeof a !== "object" || Array.isArray(a)) return true;
+    return Object.keys(a).some(key => !RUN_ARTIFACT_FIELDS.has(key))
+      || typeof a.id !== "string" || typeof a.name !== "string"
+      || (a.version !== undefined && (!Number.isSafeInteger(a.version) || a.version < 1))
+      || (a.size !== undefined && (!Number.isSafeInteger(a.size) || a.size < 0))
+      || (a.available !== undefined && typeof a.available !== "boolean");
+  }))) {
+    return "a run's public artifacts are not usable";
   }
   return null;
 }
@@ -6433,6 +7594,9 @@ export function validateRunRecord(record: unknown): string | null {
 function validateSteps(steps: readonly Partial<RunStep>[]): string | null {
   for (const s of steps) {
     if (!s || typeof s !== "object") return "that isn't a step";
+    if (Object.keys(s).some(key => !RUN_STEP_FIELDS.has(key))) return "a step has unknown fields";
+    if (!Number.isSafeInteger(s.seq) || (s.seq as number) < 1) return "a step needs its place in the run";
+    if (!RUN_STEP_KINDS.has(s.kind as RunStepKind)) return "a step has an unknown kind";
     if (typeof s.label !== "string" || s.label.length > RUN_LIMITS.label) {
       return "a step's label is too long";
     }
@@ -6583,6 +7747,10 @@ export {
 export {
   LIVE_STEPS_PER_BATCH, LIVE_STEPS_STALE_MS, type LiveRunSteps,
 } from "./livesteps.js";
+export {
+  RESPONSE_STREAM_LIMITS, isAgentResponseStreamKind, validateAgentResponseStream,
+  type AgentResponseStreamEvent, type AgentResponseStreamKind,
+} from "./responsestream.js";
 
 // ---------------------------------------------------------------------------
 // HOW HARD AN AGENT SHOULD THINK — the four words the owner chooses between, and
@@ -6653,3 +7821,47 @@ export {
   type NotificationInboxEntry, type NotificationInboxKind,
   type NotificationInboxState, type NotificationSourceState,
 } from "./notification-inbox.js";
+
+// Durable per-user chat presentation and per-channel notification choices.
+export {
+  DEFAULT_CHAT_PERSONALIZATION, channelNotificationModeFor, channelNotificationModeWords,
+  chatAvatarScale, chatAvatarSizePx,
+  normalizeChatPersonalization, reconcileChannelNotificationPrefs,
+  validateChatPersonalization, withChannelNotificationMode,
+  type AvatarSize, type ChannelNotificationMode, type ChatFontSize,
+  type ChannelNotificationModeWords, type ChatPersonalization, type MessageDensity, type TimestampStyle,
+} from "./chat-personalization.js";
+
+// Public run checkpoints, provider-gated recovery and side-by-side comparison.
+export {
+  buildRunCheckpoint, recoveryDecision, recoveryRequestFingerprint, sanitizeRecoveryAsk,
+  compareRecoveryRequest, compareRuns, validateRunCheckpoint, RUN_RECOVERY_LIMITS,
+  type RunCheckpoint, type PublicRunArtifact, type ProviderSessionCapability,
+  type RecoveryMode, type RecoveryOutcome, type RecoveryAction, type RecoveryDecision,
+  type RecoveryRequest, type RecoveryRequestPayload, type RecoveryReceipt,
+  type ComparableRun, type InaccessibleRun, type RunComparison,
+} from "./run-recovery.js";
+
+// Cloud9-owned slash commands used by the chat composer and engine.
+export {
+  COMPOSER_COMMAND_NAMES, COMPOSER_COMMAND_SPELLINGS, parseComposerCommand,
+  type ComposerCommandName, type ParsedComposerCommand,
+} from "./composer-commands.js";
+
+export {
+  activityHasDetails, activityInspectableSteps, activityKindWords,
+  activityOutcomeChips, activityRoomName, linkActivityRow, taskMatchesCommandCenterFilter,
+  type ActivityFeedWorld, type ActivityLinkedFacts, type ActivityOutcomeChip,
+  type CommandCenterFilter, type CommandCenterFacts,
+} from "./activity-command-center.js";
+
+// WHAT A SAVED WORKFLOW IS DOING — purpose, agents, trigger, current step,
+// failures, approvals, outputs. The screen draws; these functions own the words.
+export {
+  latestWorkflowRun, workflowAgentLine, workflowAgentNames, workflowApprovalWords,
+  workflowApprovalsForRun, workflowCurrentStep, workflowCurrentStepWords,
+  workflowFailureWords, workflowLatestOutput, workflowPurposeWords, workflowReadyWords,
+  workflowRoomWords, workflowRowNowWords, workflowStatusWords, workflowStepOutput,
+  workflowTriggerWords,
+  type WorkflowRunStatusWord,
+} from "./workflow-view.js";

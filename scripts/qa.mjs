@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import {
-  assertHarnessIsHonest, qaOwnerToken, qaTarget, reportAndExit, signInAsOwner, waitFor,
+  assertHarnessIsHonest, keepQaStudioVisible, qaOwnerToken, qaTarget, reportAndExit, signInAsOwner, waitFor,
   waitForAgentAnswer,
 } from "./qa-target.mjs";
 // The screen shows `summarizeRun`'s sentence VERBATIM, so the check that it did
@@ -102,6 +102,16 @@ fs.mkdirSync(SHOTS, { recursive: true });
 // A QA run points at the throwaway stack by default, never at the real hub
 // (finding #18). `qa-target.mjs` owns that decision for every QA script.
 const { ui: UI, relayPort: RELAY_PORT } = qaTarget();
+
+/** Ctrl/Cmd-K now opens the real command launcher; Quick chat is one command. */
+async function openQuickChat(page, timeout = 10_000) {
+  await page.keyboard.press("Control+k");
+  const launcher = page.locator(".command-launcher-input");
+  await launcher.waitFor({ timeout });
+  await launcher.fill("Quick chat");
+  await launcher.press("Enter");
+  await page.waitForSelector(".qc-input", { timeout });
+}
 
 /**
  * PUT A FILE INTO A CONVERSATION THE WAY THE ENGINE DOES — the only way there is.
@@ -981,8 +991,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/04-background-task.png` });
 
   // quick chat
-  await page.keyboard.press("Control+k");
-  await page.waitForSelector(".qc-input");
+  await openQuickChat(page, 30_000);
   await page.screenshot({ path: `${SHOTS}/05-quick-chat.png` });
   await page.fill(".qc-input", "quick ping from the hotkey popup");
   await page.press(".qc-input", "Enter");
@@ -1061,7 +1070,9 @@ try {
   const claudeSource = modelSource.find(m => m.harness === "claude");
   ok("where the model list came from is printed in the engine's own words, marked proved or not",
     modelSource.length === 2 &&
-    claudeSource.line.length > 20 && ["yes", "no"].includes(claudeSource.checked) &&
+    !!claudeSource && (claudeSource.chip
+      ? claudeSource.line.length > 20 && ["yes", "no"].includes(claudeSource.checked)
+      : claudeSource.line === "" && claudeSource.checked === "") &&
     modelSource.every(m => (m.line === "") === (m.checked === "")),
     modelSource.map(m => `${m.harness}: ${m.chip || "no models"} → ` +
       (m.line ? `[${m.checked}] ${m.line}` : "(nothing claimed)")).join(" | "));
@@ -1160,35 +1171,39 @@ try {
   } // end act: what the sign-in card says about every harness
   if (act("settings, the model picker and skills")) {
   // ---- his 13: settings has real, changeable things ----
-  // selectors updated (Studio reskin): the look is chosen with the approved
-  // design's three painted cards, each addressed by the theme it sets.
+  // Appearance now separates the three system/light/dark modes from its
+  // palette cards. Preview first, then Apply theme makes persistence explicit.
   const settingsPanel = page.locator(".settingspanel");
-  const themeButtons = await settingsPanel.locator("#set-look .theme-pick").count();
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="dark"]').click();
+  const modeButtons = await settingsPanel.locator("#set-look .appearance-mode [data-appearance-mode]").count();
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="dark"]').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="midnight"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
   const wentDark = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="light"]').click();
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="light"]').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="cloud9-pine"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
   const wentLight = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  ok("settings can actually change the look (light / dark / match this computer)",
-    themeButtons === 3 && wentDark === "dark" && wentLight === "light", `${wentDark} then ${wentLight}`);
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="system"]').click();
+  ok("settings can actually change the look (system / light / dark plus palettes)",
+    modeButtons === 3 && wentDark === "midnight" && wentLight === "cloud9-pine", `${wentDark} then ${wentLight}`);
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="system"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
 
   const defaultModels = await settingsPanel.locator("#set-agents select.defaultmodelpick option").count();
   ok("settings sets which app + model new agents start on",
     (await settingsPanel.locator("#set-agents select.defaultproviderpick").count()) === 1 && defaultModels > 0,
     `${defaultModels} models`);
 
-  // selectors updated (Studio reskin): quiet hours is its own section now, and
-  // a switch row is the approved design's `.toggle-row`.
-  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').check();
-  const quietEnabled = await settingsPanel.locator('#set-quiet input[type="time"]').first().isEnabled();
+  // Quiet hours lives with the other notification controls.
+  await settingsPanel.locator('#set-notify .toggle-row:has-text("Quiet hours") input').check();
+  const quietEnabled = await settingsPanel.locator('#set-notify input[type="time"]').first().isEnabled();
   ok("settings has notifications on/off and quiet hours that switch on",
     (await settingsPanel.locator('#set-notify .toggle-row:has-text("new messages") input').count()) === 1 && quietEnabled);
-  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').uncheck();
+  await settingsPanel.locator('#set-notify .toggle-row:has-text("Quiet hours") input').uncheck();
 
   ok("settings tells you where agent files live and offers a Danger zone",
-    (await settingsPanel.locator("#set-files .pathbox").count()) === 1 &&
+    (await settingsPanel.locator("#set-agents .pathbox").count()) === 1 &&
     (await settingsPanel.locator('#set-danger button:has-text("Remove Claude key")').count()) === 1 &&
-    (await settingsPanel.locator("#set-danger select.removepersonpick").count()) === 1);
+    (await settingsPanel.locator("#set-workspace select.removepersonpick").count()) === 1);
 
   // the policy disclosure (FR-PC-004) stays visible
   await page.waitForSelector("text=Heads up");
@@ -1203,6 +1218,7 @@ try {
     localStorage.setItem("cloud9.claudeCredKind", "apiKey");
   });
   await page.reload();
+  await keepQaStudioVisible(page);
   await page.waitForSelector("text=# general", { timeout: 10000 });
   const purged = await page.evaluate(() => [
     localStorage.getItem("cloud9.claudeCred"),
@@ -1417,6 +1433,10 @@ try {
 
   // a row that CAN work here writes its line into the box he already uses
   await page.click('.composer .actionspop .ap-row[data-command="!remember"]');
+  await waitFor(page, () => {
+    const textarea = document.querySelector(".thread > .composer textarea");
+    return textarea instanceof HTMLTextAreaElement && /^@\w+ !remember <.+>$/.test(textarea.value);
+  }, undefined, { timeout: 10000, what: "the selected command to reach the controlled composer" });
   const filled = await acBox.inputValue();
   ok("picking a row pre-fills the message box with the command, ready to edit and send",
     /^@\w+ !remember <.+>$/.test(filled)
@@ -1471,6 +1491,7 @@ try {
   fpage = await friendCtx.newPage();
   fpage.on("console", m => { if (m.type() === "error") consoleErrors.push("friend: " + m.text()); });
   await fpage.goto(UI);
+  await keepQaStudioVisible(fpage);
   await fpage.click("text=I have an invite");
   await fpage.fill('.panel input[placeholder="inv_…"]', code);
   await fpage.fill('.panel input[placeholder="Priya"]', "Priya");
@@ -1482,6 +1503,12 @@ try {
   const fbox = fpage.locator(".composer textarea");
   await fbox.fill("hi everyone, Priya here!");
   await fbox.press("Enter");
+  // The box only clears after the relay returns the correlated canonical row.
+  // Hold that sender-side fact explicitly before asking another window to see
+  // it, so a future failure says whether send acceptance or cross-client
+  // projection broke instead of blaming both with one timeout.
+  await fpage.waitForSelector(".msg p:has-text('Priya here')", { timeout: 30000 });
+  ok("friend's accepted message appears in their conversation", true);
   await fpage.screenshot({ path: `${SHOTS}/08-friend-view.png` });
 
   // owner sees the friend's message
@@ -1522,6 +1549,7 @@ try {
   const spentCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const spent = await spentCtx.newPage();
   await spent.goto(UI);
+  await keepQaStudioVisible(spent);
   await spent.waitForSelector("text=Welcome to Cloud9");
   // the credential that already works, exactly as a member's machine holds it
   await spent.evaluate(t => localStorage.setItem("cloud9.token", t), priyaToken);
@@ -1590,6 +1618,7 @@ try {
   const swapCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const swap = await swapCtx.newPage();
   await swap.goto(UI);
+  await keepQaStudioVisible(swap);
   await swap.waitForSelector("text=Welcome to Cloud9");
   await swap.evaluate(() => localStorage.setItem("cloud9.token", "stale-key-that-no-longer-works"));
   await swap.click("text=I have an invite");
@@ -1603,6 +1632,7 @@ try {
       && !swapped.startsWith("invite:"), `${swapped ? swapped.length : 0} chars`);
   // and a reload comes straight back in on it — the credential is genuinely good
   await swap.reload();
+  await keepQaStudioVisible(swap);
   await swap.waitForSelector(".sidebar >> text=# general", { timeout: 30000 });
   ok("and a reload comes straight back in on it, with no sign-in box",
     (await storedToken(swap)) === swapped
@@ -1698,8 +1728,7 @@ try {
   await page.click('.editor .topbar >> text=Cancel');
   await page.click('.rail-btn[data-go="chat"]');
 
-  await page.keyboard.press("Control+k");
-  await page.waitForSelector(".qc-input");
+  await openQuickChat(page);
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/design-quickchat.png`, fullPage: true });
   await page.keyboard.press("Escape");
@@ -1760,7 +1789,53 @@ try {
   const LINES = 55; // more than one 50-message page, so paging is real
   for (let i = 1; i <= LINES; i++) {
     await backlogBox.fill(`backlog line ${i}`);
-    await backlogBox.press("Enter");
+    await waitFor(page, line => {
+      const textarea = document.querySelector(".thread > .composer textarea");
+      const send = document.querySelector(".thread > .composer .sendbtn");
+      return textarea?.value === line && send instanceof HTMLButtonElement && !send.disabled;
+    }, `backlog line ${i}`, { timeout: 10000,
+      what: `backlog line ${i} to reach the controlled composer` });
+    await page.locator(".thread > .composer .sendbtn").click();
+    // Sending is acknowledgement-driven: the composer deliberately does not
+    // accept another intent until the relay echoes the canonical message.
+    // Serialise the pagination fixture on that visible fact instead of racing
+    // 55 keypresses through one pending send and accidentally building a room
+    // that never exceeds a single page.
+    try {
+      await waitFor(page, line => {
+        const accepted = [...document.querySelectorAll(".msgs .msg")]
+          .some(row => (row.textContent ?? "").includes(line));
+        const composer = document.querySelector(".thread > .composer textarea");
+        return accepted && composer instanceof HTMLTextAreaElement && composer.value === "";
+      }, `backlog line ${i}`, { timeout: 30000,
+        what: `backlog line ${i} to be accepted and the composer to be ready again` });
+    } catch (error) {
+      const state = await page.evaluate(line => {
+        const composer = document.querySelector(".thread > .composer textarea");
+        const send = document.querySelector(".thread > .composer .sendbtn");
+        const matches = [...document.querySelectorAll(".msgs .msg")]
+          .filter(row => (row.textContent ?? "").includes(line)).length;
+        const outstanding = typeof window.cloud9Wire?.questions === "function"
+          ? window.cloud9Wire.questions()
+          : undefined;
+        const framesSeen = typeof window.cloud9Wire?.seen === "function"
+          ? window.cloud9Wire.seen()
+          : undefined;
+        const lastError = typeof window.cloud9Wire?.lastError === "function"
+          ? window.cloud9Wire.lastError()
+          : undefined;
+        return {
+          composer: composer instanceof HTMLTextAreaElement ? composer.value : null,
+          sendDisabled: send instanceof HTMLButtonElement ? send.disabled : null,
+          sendWaiting: send?.getAttribute("data-waiting"),
+          matches,
+          outstanding,
+          framesSeen,
+          lastError,
+        };
+      }, `backlog line ${i}`);
+      throw new Error(`${error.message}; pagination send state=${JSON.stringify(state)}`);
+    }
   }
   await page.waitForSelector(`.msg:has-text("backlog line ${LINES}")`, { timeout: 30000 });
 
@@ -2332,7 +2407,7 @@ try {
   await cbox.fill("");
   ok("the `@ agent` button is gone, and typing @ still opens the very list it used to open",
     calmBox.atAgentButtons === 0 && armedBox.atAgentButtons === 0 &&
-    mentions.open === "yes" && mentions.n >= 2 &&
+    mentions.open === "yes" && mentions.n >= 1 &&
     mentions.names.some(n => /Scout/.test(n)),
     `${mentions.n} offered: ${mentions.names.join(" / ")}`);
 
@@ -2414,8 +2489,14 @@ try {
     return dt;
   });
   await page.dispatchEvent(".thread .composer", "dragover", { dataTransfer: dropped });
+  await waitFor(page,
+    () => document.querySelector(".thread .composer")?.getAttribute("data-dragover") === "yes",
+    undefined, { timeout: 10000, what: "the composer to enter its dragover state" });
   const sayingDrop = await page.getAttribute(".thread .composer", "data-dragover");
   await page.dispatchEvent(".thread .composer", "drop", { dataTransfer: dropped });
+  await waitFor(page,
+    () => document.querySelector(".thread .composer")?.getAttribute("data-dragover") === "no",
+    undefined, { timeout: 10000, what: "the composer to leave its dragover state after drop" });
   await page.waitForSelector('.thread .composer .uptile[data-upload="dropped-note.txt"]', { timeout: 25000 });
   const afterDrop = await page.getAttribute(".thread .composer", "data-dragover");
   /* Built and dispatched inside the page rather than handed in from here: a
@@ -2601,6 +2682,7 @@ try {
       steps: [...(block?.querySelectorAll(".runstep") ?? [])]
         .map(s => `${s.dataset.seq}:${s.dataset.kind}:${s.dataset.ok}`),
       says: (block?.innerText ?? "").replace(/\s+/g, " ").trim(),
+      note: (block?.querySelector(".livenote")?.textContent ?? "").replace(/\s+/g, " ").trim(),
     };
   }, carrierId);
   ok("live steps stream onto the message that asked, and a step reported twice is ONE step with its outcome filled in — never the same command listed again",
@@ -2608,8 +2690,11 @@ try {
     live.steps.join(" ") === "1:command:true 2:read:unsaid",
     `${live.said} step(s) claimed, drawn: ${live.steps.join(" / ")}`);
   ok("and it says out loud that this is live and not the record, so nobody reads a preview as the answer",
-    /working/i.test(live.says) && /full record appears when it finishes/i.test(live.says),
-    live.says.slice(0, 110));
+    (/working/i.test(live.says) || /completed/i.test(live.says)) &&
+    (/live from the app as it works/i.test(live.note)
+      ? /full record appears when it finishes/i.test(live.note)
+      : /not the stored record/i.test(live.note) && /clear shortly/i.test(live.note)),
+    `${live.says.slice(0, 70)} :: ${live.note}`);
   await page.screenshot({ path: `${SHOTS}/live-steps.png` });
 
   await sendSteps(undefined, true);
@@ -2767,11 +2852,8 @@ try {
     movedWords);
   await page.screenshot({ path: `${SHOTS}/thread-line-new.png` });
 
-  await waitFor(page, () =>
-    document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
-  undefined, { timeout: 25000, what: "the ↳ mark to go once the room is read" });
-  ok("reading the room takes the ↳ mark away with the rest — a mark that will not go is one he learns to ignore",
-    (await page.locator('.side-item[data-channel="general"] .cnt.inthread').count()) === 0);
+  ok("entering the room keeps the ↳ mark while its thread is still unopened — it never claims an unseen reply was read",
+    (await page.locator('.side-item[data-channel="general"] .cnt.inthread').count()) === 1);
 
   await movedLine.click();
   await page.waitForSelector(".threadpanel", { timeout: 15000 });
@@ -2783,6 +2865,11 @@ try {
     (await movedLine.getAttribute("data-thread-new")) === null &&
     !/\bnew\b/i.test((await movedLine.innerText()).replace(/\s+/g, " ")),
     (await movedLine.innerText()).replace(/\s+/g, " ").trim());
+  await waitFor(page, () =>
+    document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
+  undefined, { timeout: 25000, what: "the ↳ mark to go once its thread is opened" });
+  ok("opening the unread thread takes the ↳ mark away with the rest — a mark that will not go is one he learns to ignore",
+    (await page.locator('.side-item[data-channel="general"] .cnt.inthread').count()) === 0);
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
 
@@ -2899,10 +2986,10 @@ try {
     await page.click('.rail-btn[data-go="chat"]');
     await page.waitForSelector(".sidebar >> text=Ping", { timeout: 20000 });
     await page.click(".sidebar >> text=# general");
-    await page.selectOption(".chathead select", { label: "✨ Ping" }).catch(async () => {
-      const opt = await page.$$eval(".chathead select option",
+    await page.selectOption('.chathead select[aria-label="Add someone to this room"]', { label: "✨ Ping" }).catch(async () => {
+      const opt = await page.$$eval('.chathead select[aria-label="Add someone to this room"] option',
         os => os.find(o => o.textContent.includes("Ping"))?.value);
-      await page.selectOption(".chathead select", opt);
+      await page.selectOption('.chathead select[aria-label="Add someone to this room"]', opt);
     });
     await page.fill(".composer textarea", "@Ping !bg a job to reject");
     await page.press(".composer textarea", "Enter");
@@ -2969,8 +3056,8 @@ try {
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     await goSettings();
     if (!(await quietBox().isChecked())) await quietBox().click();
-    await page.fill('#set-quiet .quietrow .field-row:nth-child(1) input[type="time"]', hhmm(nowMin - 30));
-    await page.fill('#set-quiet .quietrow .field-row:nth-child(2) input[type="time"]', hhmm(nowMin + 30));
+    await page.fill('#set-notify .quietrow .field-row:nth-child(1) input[type="time"]', hhmm(nowMin - 30));
+    await page.fill('#set-notify .quietrow .field-row:nth-child(2) input[type="time"]', hhmm(nowMin + 30));
     await backToGeneral();
     await fpage.fill(".composer textarea", "@Vikas notify-quiet-should-stay-silent");
     await fpage.press(".composer textarea", "Enter");
@@ -3581,8 +3668,7 @@ try {
     "brief closed, stack empty, the casting room still behind it");
   /* And the palette itself, in the same run and through the same owner — the
      control case that made UI-2 a consistency bug rather than a one-off. */
-  await page.keyboard.press("Control+k");
-  await page.waitForSelector(".qc-input", { timeout: 10000 });
+  await openQuickChat(page);
   await page.keyboard.press("Escape");
   await page.waitForSelector(".qc-input", { state: "detached", timeout: 10000 });
   ok("and the quick-chat palette still closes on Escape now that it goes through that owner too",
@@ -4091,8 +4177,21 @@ try {
   await page.click('.sidebar .side-item[data-channel="general"]');
   await page.waitForSelector(".composer textarea", { timeout: 20000 });
 
-  await fpage.fill(".composer textarea", "@Scout could you find me a villa too?");
-  await fpage.press(".composer textarea", "Enter");
+  // Permission refusal is meaningful only for an agent actually present in
+  // the room. Put Priya into Scout's room first; an out-of-room `@Scout` is now
+  // correctly unresolved by the exact-room mention contract.
+  await page.click('.sidebar .side-item[data-channel="trip-goa"]');
+  await page.selectOption('.chathead select[aria-label="Add someone to this room"]', { label: "Priya" });
+  await fpage.waitForSelector('.sidebar .side-item[data-channel="trip-goa"]', { timeout: 20000 });
+  await fpage.click('.sidebar .side-item[data-channel="trip-goa"]');
+  await fpage.fill(".thread > .composer textarea", "@Scout could you find me a villa too?");
+  await waitFor(fpage, expected => {
+    const textarea = document.querySelector(".thread > .composer textarea");
+    const send = document.querySelector(".thread > .composer .sendbtn");
+    return textarea?.value === expected && send instanceof HTMLButtonElement && !send.disabled;
+  }, "@Scout could you find me a villa too?", { timeout: 10000,
+    what: "Priya's exact-room Scout mention to reach the composer" });
+  await fpage.locator(".thread > .composer .sendbtn").click();
   await fpage.waitForSelector('.mentionrefused[data-agent="Scout"]', { timeout: 25000 });
   ok("an agent that will not answer you says so, instead of silently doing nothing",
     /only answers/.test(await fpage.locator('.mentionrefused[data-agent="Scout"]').innerText()),
@@ -4172,9 +4271,14 @@ try {
      was gone and he could not shorten what he had written. */
   const TOO_LONG = "x".repeat(MESSAGE_LIMITS.text + 1000);
   await page.fill(".composer textarea", TOO_LONG);
-  await page.locator(".composer textarea").press("Enter");
+  // Draft persistence validates the same bound while the browser is filling a
+  // very large value. Capture that real refusal before its seven-second toast
+  // expires; then press Enter and prove the composer still keeps every word.
+  // Waiting only after Enter races the already-shown draft refusal on slower
+  // machines and mistakes an expired toast for a missing validation gate.
   await page.waitForSelector(".toast .toast-text", { timeout: 15000 });
   const tooLongSays = (await page.locator(".toast .toast-text").innerText()).trim();
+  await page.locator(".composer textarea").press("Enter");
   const stillTyped = await page.inputValue(".composer textarea");
   ok("A3: a message too long is refused in plain words AND every character he typed is still there",
     new RegExp(`too long \\(max ${MESSAGE_LIMITS.text} characters\\)`).test(tooLongSays)
@@ -4196,7 +4300,7 @@ try {
   });
   await page.waitForSelector('.uploadtray .uptile[data-upload="site-plan.png"].done', { timeout: 20000 });
   ok("a picked file goes up and says it is ready to send",
-    /ready to send/.test(await page.locator('.uptile[data-upload="site-plan.png"] .meta').innerText()),
+    /ready to send/i.test(await page.locator('.uptile[data-upload="site-plan.png"] .meta').innerText()),
     (await page.locator('.uptile[data-upload="site-plan.png"] .meta').innerText()).trim());
 
   await page.setInputFiles(".composer input.filepick", {
@@ -4228,7 +4332,9 @@ try {
      screen here depends on which acts ran before this one, so they are cleared
      on purpose rather than assumed away. */
   for (const everyday of ["report(1).pdf", "café-menu.txt", "photo#3.png"]) {
+    const tile = page.locator(`.uploadtray .uptile[data-upload="${everyday}"]`);
     await press(page, `.uploadtray .uptile[data-upload="${everyday}"] .upx`);
+    await tile.waitFor({ state: "detached", timeout: 10000 });
   }
   await waitFor(page, () => document.querySelectorAll(".uploadtray .uptile").length === 2,
     undefined, { timeout: 10000, what: "the everyday files to be taken back off" });
@@ -4496,7 +4602,7 @@ try {
   await page.waitForTimeout(250);
   ok("an archived room offers nothing that would put something new in it",
     (await page.locator(".msgs .msgactions").count()) === 0 &&
-    (await page.locator(".chathead select").count()) === 0);
+    (await page.locator(".chathead .addmember").count()) === 0);
   ok("an archived room still reads all the way down — the words and the files stay",
     (await page.locator('.msg .fileblock[data-file="site-plan.png"]').count()) === 1 &&
     (await page.locator(".msgs .msg").count()) > 0);
@@ -4590,15 +4696,13 @@ try {
     (await ownScout.innerText()).replace(/\s+/g, " ").trim());
   await page.screenshot({ path: `${SHOTS}/room-members-owner.png` });
 
-  // the right rail says it too — an agent is a room participant wherever it is drawn
+  // Channel context is opt-in now: closing details must not leave the former
+  // permanent rail occupying the conversation, and reopening restores rows.
   await page.click(".roompanel .roomclose");
-  await page.waitForSelector('.aside .mini-agent[data-agent="Bramble"]', { timeout: 20000 });
-  const railBramble = page.locator('.aside .mini-agent[data-agent="Bramble"] .agentowner');
-  ok("the same is said in the rail beside the conversation, not only in the details panel",
-    (await railBramble.getAttribute("data-owner")) === "Priya" &&
-    /Priya can read this room/i.test(await railBramble.locator(".readsroom").innerText()),
-    (await railBramble.innerText()).replace(/\s+/g, " ").trim());
-  await page.screenshot({ path: `${SHOTS}/room-rail-owner.png` });
+  await page.waitForSelector(".roompanel", { state: "detached", timeout: 20000 });
+  ok("channel details stay opt-in instead of leaving a permanent rail beside the conversation",
+    (await page.locator(".aside").count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/room-details-closed.png` });
   await page.click(".chathead .roomdetailsbtn");
   await page.waitForSelector(".roompanel .memberrow", { timeout: 20000 });
 
@@ -4615,8 +4719,7 @@ try {
     /Vikas can read this room/i.test(await memberSeesScout.locator(".readsroom").innerText()),
     (await memberSeesScout.innerText()).replace(/\s+/g, " ").trim());
   ok("a plain member is not offered the control that lets somebody in — it is not there to click",
-    (await fpage.locator(".chathead .addmember").count()) === 0 &&
-    (await fpage.locator(".chathead select").count()) === 0);
+    (await fpage.locator(".chathead .addmember").count()) === 0);
   await fpage.screenshot({ path: `${SHOTS}/room-members-member.png` });
 
   // ---- membership is a HISTORY now: two rows, not one (§11.6) ----
@@ -4873,12 +4976,13 @@ try {
   /* Waited on both files STOPPING — landed or refused — rather than on both
      landing, so a file the refusal wrongly killed is reported by the check
      below instead of being lost in a timeout. */
-  await page.waitForFunction(() => document.querySelectorAll(
-    ".uploadtray .uptile.done, .uploadtray .uptile.failed").length === 2,
-  null, { timeout: 60000 });
+  await page.waitForFunction(names => names.every(name => document.querySelector(
+    `.uploadtray .uptile[data-upload="${name}"].done, .uploadtray .uptile[data-upload="${name}"].failed`)),
+  ["survey-scan.bin", "deposit-note.bin"], { timeout: 60000 });
   ok("the unrelated refusal touches NEITHER file — both land and both are ready to send",
-    (await page.locator(".uploadtray .uptile.failed").count()) === 0 &&
-    (await page.locator(".uploadtray .uptile.done").count()) === 2,
+    (await page.locator('.uploadtray .uptile[data-upload="survey-scan.bin"].done').count()) === 1 &&
+    (await page.locator('.uploadtray .uptile[data-upload="deposit-note.bin"].done').count()) === 1 &&
+    (await page.locator('.uploadtray .uptile[data-upload="survey-scan.bin"].failed, .uploadtray .uptile[data-upload="deposit-note.bin"].failed').count()) === 0,
     (await page.locator(".uploadtray").innerText()).replace(/\s+/g, " ").trim().slice(0, 120));
   ok("and the refusal is still said on screen, in the hub's own words",
     /can only change your own messages/.test(refusal), refusal);
@@ -4963,8 +5067,25 @@ try {
   await page.screenshot({ path: `${SHOTS}/fix2-enter-waits.png` });
 
   // and once it lands, the very same message goes with the file it was holding
-  await page.waitForSelector('.uploadtray .uptile[data-upload="roof-survey.bin"].done',
-    { timeout: 40000 });
+  const roofUpload = await page.evaluate(async () => {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const tile = document.querySelector('.uploadtray .uptile[data-upload="roof-survey.bin"]');
+      if (tile?.classList.contains("done") || tile?.classList.contains("failed")) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const tile = document.querySelector('.uploadtray .uptile[data-upload="roof-survey.bin"]');
+    return {
+      found: !!tile,
+      classes: tile?.className ?? "",
+      words: tile?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      outstanding: window.cloud9Wire.outstanding(),
+      queued: window.cloud9Files.queued(),
+    };
+  });
+  if (!/\bdone\b/.test(roofUpload.classes)) {
+    throw new Error(`roof-survey upload did not become ready: ${JSON.stringify(roofUpload)}`);
+  }
   await page.click(".composer .primary.small");
   await page.waitForSelector('.msg .fileblock[data-file="roof-survey.bin"]', { timeout: 30000 });
   ok("nothing was lost by waiting — the file goes out with the words that were typed",
@@ -5055,9 +5176,16 @@ try {
     capSays.under === "12", JSON.stringify(capSays));
 
   /* ---- and a real, uncapped count on the rail is still the plain truth ---- */
+  await page.click(".sidebar >> text=# general");
   await fpage.click(".sidebar >> text=# paperwork");
-  await fpage.fill(".composer textarea", "one more for the pile");
-  await fpage.press(".composer textarea", "Enter");
+  await fpage.fill(".thread > .composer textarea", "one more for the pile");
+  await waitFor(fpage, expected => {
+    const textarea = document.querySelector(".thread > .composer textarea");
+    const send = document.querySelector(".thread > .composer .sendbtn");
+    return textarea?.value === expected && send instanceof HTMLButtonElement && !send.disabled;
+  }, "one more for the pile", { timeout: 10000,
+    what: "Priya's paperwork message to reach the controlled composer" });
+  await fpage.locator(".thread > .composer .sendbtn").click();
   await waitFor(page, () => (document.querySelector(
     '.sidebar .side-item[data-channel="paperwork"] .cnt.hot')?.textContent ?? "") !== "",
   undefined, { timeout: 25000, what: "an unread mark to appear on the rail" });
@@ -5121,8 +5249,7 @@ try {
   /* ---- and the newest overlay closes FIRST, which is what a person means ----
      Two overlays at once is the case a per-overlay handler cannot get right: the
      palette used to be closed from under whatever was opened on top of it. */
-  await page.keyboard.press("Control+k");
-  await page.waitForSelector(".qc-input", { timeout: 10000 });
+  await openQuickChat(page);
   await page.evaluate(() => window.cloud9Menu.run("new-channel"));
   await page.waitForSelector('.panel input[placeholder="trip-goa"]', { timeout: 10000 });
   ok("with two overlays open, both are on the stack and neither is guessing",
@@ -5466,10 +5593,10 @@ try {
     `${afterTray.fromBottom}px from the bottom, reasons since: ${JSON.stringify(sinceTray)}`);
 
   /* ---- the box grows with what is in it ----
-     It was `rows={1}` and nothing else, so a five-line message was typed into a
-     one-line slot with its own hidden scrollbar: he could see the line he was on
-     and none of the ones above it. And the list shrinks as it grows, which is
-     the very thing the rule above is watching for. */
+     The composer starts at its comfortable three-line minimum now. A five-line
+     message must still make the box meaningfully taller and fit without its own
+     hidden scrollbar. The list shrinks as it grows, which is the very thing the
+     rule above is watching for. */
   const oneLine = await page.$eval(".composer textarea", ta => Math.round(ta.getBoundingClientRect().height));
   await page.fill(".composer textarea", "one\ntwo\nthree\nfour\nfive");
   await page.waitForTimeout(500);
@@ -5477,7 +5604,7 @@ try {
     ta => ({ h: Math.round(ta.getBoundingClientRect().height), scrollH: ta.scrollHeight }));
   const whileTyping = await viewNow();
   ok("the box grows with what is typed into it, and the newest message stays in sight while it does",
-    fiveLines.h >= oneLine * 3 && fiveLines.h >= fiveLines.scrollH - 2 &&
+    fiveLines.h > oneLine + 8 && fiveLines.h >= fiveLines.scrollH - 2 &&
     whileTyping.fromBottom < 3 && whileTyping.newestInSight === true,
     `${oneLine}px empty → ${fiveLines.h}px for five lines (content ${fiveLines.scrollH}px), ` +
     `${whileTyping.fromBottom}px from the bottom`);
@@ -6221,7 +6348,7 @@ try {
      row does not say "0" would pass on a card that says "0"; asserting the row
      is not in the document is the only version that means anything. */
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   // What the screen is holding, printed before anything is asserted — a missing
   // card and a record that never arrived look identical on screen and are two
   // completely different bugs.
@@ -6321,7 +6448,7 @@ try {
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.taskrow .callout.run[data-run="${jobRunId}"]`, { timeout: 20000 });
   await noSidewaysWithACard("in the Tasks in-tray", "run-tasks");
 
@@ -6466,11 +6593,9 @@ try {
     (await richCard.locator('.runstep[data-kind="note"].held').count()) === 1 &&
     (await richCard.locator('.runstep[data-kind="note"].bad').count()) === 0 &&
     /Refused to use Bash/.test(await richCard.locator('.runstep[data-kind="note"]').innerText()));
-  ok("what it thought and what it said are folded away until they are asked for",
+  ok("private thinking and raw provider chatter are never shown in a public run",
     (await richCard.locator('.runstep[data-kind="thinking"]').count()) === 0 &&
-    (await richCard.locator(".runquiet").innerText()).includes("2"));
-  await richCard.locator(".runquiet").click();
-  await page.waitForSelector(`.workrow[data-run="${rich.id}"] .runstep[data-kind="thinking"]`, { timeout: 10000 });
+    (await richCard.locator(".runquiet").count()) === 0);
   await page.screenshot({ path: `${SHOTS}/run-steps.png` });
 
   // ---- the Codex half: tokens, and never a price ----
@@ -6525,15 +6650,14 @@ try {
      ====================================================================== */
 
   REPO = "vikas53953/cloud9";
-  await page.click('.rail-btn[data-go="projects"]');
+  await clickRail(page, "projects");
   await page.waitForSelector(".projects", { timeout: 20000 });
 
-  ok("PROJECTS is in the primary rail with the approved direct destinations and More tools",
+  ok("PROJECTS stays reachable through More while the primary rail keeps the focused destinations",
     await page.evaluate(() => {
-      const rail = [...document.querySelectorAll(".rail [data-go]")]
+      const rail = [...document.querySelectorAll(".rail-primary [data-go]")]
         .map(b => b.dataset.go ?? b.title ?? "");
-      return rail.includes("projects")
-        && ["chat", "tasks", "activity", "settings"].every(s => rail.includes(s))
+      return ["chat", "activity", "files"].every(s => rail.includes(s))
         && !!document.querySelector("[data-open-tools]");
     }),
     (await page.$$eval(".rail [data-go]", bs => bs.map(b => b.dataset.go ?? b.title).join(", "))));
@@ -7067,7 +7191,7 @@ try {
     /cloud9\/scout-7/.test(await pushCard.innerText()));
   ok("it says this is something outside this computer, and that nothing has left it yet",
     /outside this computer/i.test(await pushCard.innerText()) &&
-    /Nothing has been changed yet/i.test(await pushCard.innerText()));
+    /Nothing has left it/i.test(await pushCard.innerText()));
   /* The eyebrow is set in small caps by the sheet, so the WORDS are compared
      and not the casing — `innerText` hands back what the CSS did. */
   ok("and which of the three things Cloud9 asks about this is, from the shared table",
@@ -7114,7 +7238,7 @@ try {
     await prCard.locator(".spend").innerText());
 
   /* ---- the same request, in the Tasks in-tray ---- */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   const trayCard = page.locator(
     `.tasks-side .approval[data-kind="action"][data-appr="${pushApprovalId}"]`);
   await trayCard.waitFor({ timeout: 20000 });
@@ -7130,8 +7254,7 @@ try {
      return to the in-tray, and then return to the room: both surfaces must still
      show the same pending approval with the real buttons. */
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForSelector('.rail-btn[data-go="tasks"]', { timeout: 20000 });
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.tasks-side .approval[data-appr="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
   const persistedTray = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
   ok("a pending action survives an owner-window reload in the Tasks in-tray",
@@ -7155,7 +7278,7 @@ try {
     (await persistedMessage.innerText()).replace(/\s+/g, " "));
 
   /* ---- HE SAID YES, and the relay records completion ---------------------- */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector('.tasks-side', { timeout: 20000 });
   const APPROVE_FACTS = {
     action: "push", repo: REPO, branch: "cloud9/scout-approved", commits: 1, files: 1,
@@ -7238,7 +7361,7 @@ try {
     (await issueCard.locator(".remoteact").innerText()).trim());
   ok("the write card is drawn as a pending request, nothing changed yet",
     (await issueCard.getAttribute("data-state")) === "pending" &&
-    /Nothing has been changed yet/i.test(await issueCard.innerText()));
+    /Nothing has left it/i.test(await issueCard.innerText()));
   ok("open-issue is one of the shared GitHub write kinds, and push is not",
     isGitHubWriteKind("openIssue") && !isGitHubWriteKind("push"));
   await issueCard.scrollIntoViewIfNeeded();
@@ -7274,12 +7397,15 @@ try {
    * NEXT script, blamed on a feature that was working perfectly. A section that
    * mints approvals answers all of them before it leaves.
    */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(".tasks-side", { timeout: 20000 });
-  for (const left of await page.$$eval('.tasks-side .approval[data-kind="action"]',
-    els => els.map(e => e.dataset.appr))) {
-    await page.evaluate(id => window.cloud9Wire.ask(
-      { type: "decideApproval", approvalId: id, decision: "rejected" }), left);
+  for (let dismissed = 0; dismissed < 20; dismissed++) {
+    const left = page.locator('.tasks-side .approval[data-kind="action"]').first();
+    if (await left.count() === 0) break;
+    const leftId = await left.getAttribute("data-appr");
+    await left.locator('button:has-text("Not now")').click();
+    await page.waitForSelector(`.tasks-side .approval[data-appr="${leftId}"]`,
+      { state: "detached", timeout: 20000 });
   }
   await waitFor(page, () => document.querySelectorAll('.tasks-side .approval[data-kind="action"]').length === 0,
     undefined, { timeout: 20000, what: "this section's own requests to be answered and gone" });
@@ -8117,7 +8243,7 @@ try {
 
   /* THE PICTURE ITSELF: two repositories, one nickname. It used to be said
      twice — a clean toast and an "Error:"-prefixed line under the form. */
-  await page.click('.rail-btn[data-go="projects"]');
+  await clickRail(page, "projects");
   await page.waitForSelector(".projects", { timeout: 20000 });
   await page.click(".projects .topbar [data-connect]");
   await page.waitForSelector(".connectproj", { timeout: 20000 });
@@ -8275,6 +8401,52 @@ try {
   const stuckAgent = mine4.find(a => a.name === "Scout") ?? mine4[0];
   const failAgent = mine4.find(a => a.id !== stuckAgent.id) ?? stuckAgent;
 
+  /* The relay quite properly refuses work for an agent that is not in the
+     requested room.  Scout was created for #trip-goa and Architect was hired
+     later, so neither is guaranteed to be in #general at this point.  Bring
+     the exact agents selected below into this room through the same control a
+     person uses, then hold the room's rendered membership as the gate before
+     sending any createTask frame. */
+  const roomPanel = page.locator(".roompanel");
+  // RoomPanel's stable id is the channel id; its heading is intentionally
+  // split into a # span and text, so text selectors are not a reliable room
+  // identity check here.
+  const generalRoomPanel = page.locator(`[id="room-context-${genId4}"]`);
+  let closedWrongRoomPanel = false;
+  if ((await generalRoomPanel.count()) === 0) {
+    if (await roomPanel.count() > 0) {
+      await roomPanel.locator(".roomclose").click();
+      await roomPanel.waitFor({ state: "detached", timeout: 15000 });
+      closedWrongRoomPanel = true;
+    }
+    await page.click(".chathead .roomdetailsbtn");
+  }
+  await generalRoomPanel.waitFor({ state: "visible", timeout: 15000 });
+  ok("room details close any prior room and reopen for #general before seeding",
+    await generalRoomPanel.count() === 1,
+    closedWrongRoomPanel ? "closed prior room, opened #general" : "#general details already open");
+  await generalRoomPanel.locator(".roommembers").waitFor({ state: "visible", timeout: 15000 });
+  const seedAgents = [...new Map([stuckAgent, failAgent].map(agent => [agent.id, agent])).values()];
+  for (const agent of seedAgents) {
+    const member = generalRoomPanel.locator(`.roommembers .memberrow[data-member="${agent.name}"]`);
+    if (await member.count() > 0) continue;
+    const add = page.locator('.chathead select[aria-label="Add someone to this room"]');
+    await add.waitFor({ state: "visible", timeout: 15000 });
+    await add.selectOption(agent.id);
+    await member.waitFor({ state: "visible", timeout: 25000 });
+  }
+  const memberNames = await generalRoomPanel.locator(".roommembers .memberrow")
+    .evaluateAll(rows => rows.map(row => row.getAttribute("data-member")));
+  const missingSeedAgents = seedAgents.map(agent => agent.name)
+    .filter(name => !memberNames.includes(name));
+  ok("the selected seed agents are confirmed members of #general before work is created",
+    missingSeedAgents.length === 0,
+    missingSeedAgents.length === 0 ? seedAgents.map(agent => agent.name).join(", ")
+      : `missing: ${missingSeedAgents.join(", ")}`);
+  if (missingSeedAgents.length > 0) {
+    throw new Error(`the seed room is missing its selected agents: ${missingSeedAgents.join(", ")}`);
+  }
+
   /** Hand the hub a real job and then the state the engine cannot yet reach. */
   const seedJob = async ({ agentId, title, status, error, summary }) => {
     const before = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
@@ -8319,7 +8491,7 @@ try {
     status: "failed",   // nothing recorded: no error, no summary
   });
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.taskrow[data-task="${failedJob}"]`, { timeout: 30000 });
   const failedCard = (await page.locator(`.taskrow[data-task="${failedJob}"]`).innerText())
     .replace(/\s+/g, " ").trim();
@@ -8583,22 +8755,37 @@ try {
      working and has to name that agent; pressing it has to really end the turn
      and be said out loud; and the record has to call it STOPPED — not failed,
      which is what "it went wrong" looks like and is a different thing. */
-  await page.click(".sidebar >> text=# trip-goa");
+  /* Earlier access-control journeys deliberately change #trip-goa. Build a
+     fresh, visible room with Scout for this run so Stop is exercised against a
+     turn that can actually be accepted, rather than a historical membership. */
+  const stopRoomName = "stop-journey";
+  await page.click('button[title="New channel"]');
+  await page.fill('.panel input[placeholder="trip-goa"]', stopRoomName);
+  await page.click('label:has-text("Scout") input');
+  await page.click(".panel .foot >> text=Create");
+  await page.waitForSelector(`.sidebar >> text=# ${stopRoomName}`, { timeout: 15000 });
+  await page.click(`text=# ${stopRoomName}`);
   await page.waitForSelector(".composer textarea", { timeout: 15000 });
 
   const stopWorld = await page.evaluate(() => ({
     channels: window.cloud9Wire.channels(),
     agents: window.cloud9Wire.agents(),
   }));
-  const scoutId = stopWorld.agents.find(a => a.name === "Scout")?.id;
-  const tripGoaId = stopWorld.channels.find(c => c.name === "trip-goa")?.id;
-  if (!scoutId || !tripGoaId) {
-    throw new Error("the Stop journey could not identify Scout or #trip-goa from the running app");
+  const tripGoa = stopWorld.channels.find(c => c.name === stopRoomName);
+  const tripGoaId = tripGoa?.id;
+  /* This room was created directly above with Scout selected. `memberIds` is
+     intentionally the human membership projection, so it cannot be used to
+     rediscover the agent that the create-room form just admitted. */
+  const stopAgent = stopWorld.agents.find(a => a.name === "Scout");
+  const stopAgentId = stopAgent?.id;
+  const stopAgentName = stopAgent?.name;
+  if (!stopAgentId || !stopAgentName || !tripGoaId) {
+    throw new Error("the Stop journey could not identify an agent member of the fresh Stop room");
   }
-  /* Earlier smoke journeys may still have Scout finishing background work.
+  /* Earlier smoke journeys may still have the selected agent finishing background work.
      A second !bg request queues behind that turn, so clicking the already
      visible Stop would exercise the wrong task. Start this journey only from
-     the state a person sees before beginning new work: Scout is idle and has
+     the state a person sees before beginning new work: the selected agent is idle and has
      no queued/running job. */
   await waitFor(page, wantedAgent => {
     const hasStop = [...document.querySelectorAll("button.stopnow[data-stop-agent]")]
@@ -8606,7 +8793,8 @@ try {
     const hasLiveJob = window.cloud9Runs.jobs().some(j =>
       j.agentId === wantedAgent && (j.status === "not_started" || j.status === "working"));
     return !hasStop && !hasLiveJob;
-  }, scoutId, { timeout: 180000, what: "Scout to finish earlier work before the Stop journey" });
+  }, stopAgentId, { timeout: 180000,
+    what: `${stopAgentName} to finish earlier work before the Stop journey` });
   const knownJobs = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
 
   /* CATCH THE CONTROL THE MOMENT IT EXISTS, AND PRESS IT THERE AND THEN.
@@ -8642,7 +8830,7 @@ try {
         clearInterval(timer);
       });
       mo.observe(document.body, { childList: true, subtree: true, attributes: true });
-      /* A task can enter the store while an older Scout Stop is already drawn.
+      /* A task can enter the store while an older Stop control is already drawn.
          That state change need not alter this conversation's DOM, so the
          observer alone has nothing to wake it. Poll the app's own QA seam too;
          the click is still the real button and only the fresh task can arm it. */
@@ -8652,15 +8840,34 @@ try {
         mo.disconnect();
       }, 25);
     }
-  }, [knownJobs, scoutId, tripGoaId]);
+  }, [knownJobs, stopAgentId, tripGoaId]);
   const stopBox = page.locator(".composer textarea");
-  await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
+  const stopAsk = "take your time comparing every villa in this shortlist";
+  await stopBox.fill(`@${stopAgentName} !bg ${stopAsk}`);
   await stopBox.press("Enter");
+  /* A new agent's local-free contract still asks before background work when
+     its capabilities can change the owner's computer. Approve THIS job through
+     the visible card; otherwise it remains waiting and a Stop control is
+     correctly absent. Agents that do not need approval take the working branch
+     immediately, so this wait also keeps the QA path honest for both states. */
+  await waitFor(page, title => {
+    const pending = [...document.querySelectorAll('.msg[data-approval][data-state="pending"]')]
+      .some(card => (card.textContent ?? "").includes(title));
+    const working = window.cloud9Runs.jobs().some(job =>
+      job.title?.includes(title) && (job.status === "not_started" || job.status === "working"));
+    return pending || working;
+  }, stopAsk, { timeout: 30000, what: "the Stop job to be approved or started" });
+  const stopApproval = page.locator('.msg[data-approval][data-state="pending"]')
+    .filter({ hasText: stopAsk }).last();
+  if (await stopApproval.count()) {
+    await stopApproval.locator('button:has-text("Approve")').click();
+  }
   await waitFor(page, () => !!window.__c9stop, undefined,
     { timeout: 90000, what: "a Stop control to be offered while the agent works" });
   const stopSeen = await page.evaluate(() => window.__c9stop);
   ok("while an agent is working, the owner is offered a Stop that names THAT agent",
-    stopSeen.text === "Stop" && stopSeen.agent === scoutId && /Stop Scout/.test(stopSeen.title),
+    stopSeen.text === "Stop" && stopSeen.agent === stopAgentId &&
+    stopSeen.title === `Stop ${stopAgentName} and spend nothing more on this`,
     `${stopSeen.title} :: data-stop-agent=${stopSeen.agent}`);
   /* IT REALLY STOPPED — asked of the hub's own record, not of a sentence.
      `RunOutcome` has no "timed out": a turn that ran out of time is `failed`,

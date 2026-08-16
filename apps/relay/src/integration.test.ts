@@ -217,7 +217,12 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
   assert.equal(t1.task.approvalId, pend1.approval.id);
   await owner.wait(f => f.type === "message" && /approval/i.test(f.message.text)); // agent said it's waiting
 
-  owner.send({ type: "decideApproval", approvalId: pend1.approval.id, decision: "rejected" });
+  owner.send({
+    type: "decideApproval", approvalId: pend1.approval.id, decision: "rejected",
+    expectedRevision: pend1.approval.revision ?? 0,
+    approvalEpoch: pend1.approval.approvalEpoch,
+    requestId: "integration-reject-1",
+  });
   const t1done = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
     f => f.type === "task" && f.task.id === t1.task.id && f.task.status === "cancelled");
   assert.equal(t1done.task.error, "rejected by owner");
@@ -230,7 +235,12 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
   owner.send({ type: "send", channelId: general.id, text: "@Guard !bg summarise the safe thing" });
   const pend2 = await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.status === "pending" && f.approval.id !== pend1.approval.id);
-  owner.send({ type: "decideApproval", approvalId: pend2.approval.id, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: pend2.approval.id, decision: "approved",
+    expectedRevision: pend2.approval.revision ?? 0,
+    approvalEpoch: pend2.approval.approvalEpoch,
+    requestId: "integration-approve-2",
+  });
   const done = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
     f => f.type === "task" && f.task.approvalId === pend2.approval.id && f.task.status === "completed", 8000);
   assert.ok(done.task.result && done.task.result.length > 0);
@@ -245,7 +255,12 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
   const pend3 = await friend.wait<Extract<ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.status === "pending" &&
          f.approval.id !== pend1.approval.id && f.approval.id !== pend2.approval.id);
-  friend.send({ type: "decideApproval", approvalId: pend3.approval.id, decision: "approved" });
+  friend.send({
+    type: "decideApproval", approvalId: pend3.approval.id, decision: "approved",
+    expectedRevision: pend3.approval.revision ?? 0,
+    approvalEpoch: pend3.approval.approvalEpoch,
+    requestId: "integration-outsider-3",
+  });
   const err = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
   assert.match(err.error, /owner/);
 

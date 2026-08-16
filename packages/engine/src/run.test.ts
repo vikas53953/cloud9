@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { AgentDef, validateAgentInput } from "@cloud9/shared";
 import { codexArgs } from "./codex.js";
-import { run, safeArg, shellQuote, UnsafeArgumentError } from "./run.js";
+import { commandLine, run, safeArg, shellQuote, UnsafeArgumentError } from "./run.js";
 
 const isWin = process.platform === "win32";
 
@@ -56,6 +56,177 @@ test("shellQuote refuses metacharacters in paths and quotes plain spaces", () =>
     assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
   }
 });
+
+// ===== WINDOWS 8.3 SHORT PATHS (2026-08-12) — start =====
+//
+// Windows gives every name longer than eight characters a second, SHORT name:
+// `Administrator` is also `ADMINI~1`, and a GitHub runner's own `os.tmpdir()`
+// really is `C:\Users\RUNNER~1\AppData\Local\Temp`. The engine hands its own
+// temp and worktree paths to `git` and `codex` as arguments, so while the
+// allowlist refused every tilde the engine REFUSED ITS OWN PATHS on any machine
+// whose username is over eight characters — dozens of tests red on
+// `windows-latest`, for a path the operating system itself handed us.
+//
+// The rule that fixes it must not buy that back by letting a tilde-expansion
+// shape through, so both halves are asserted here, and neither half is guarded
+// on `process.platform`: the rule is a pure string check, so these exact
+// assertions run and must pass on Linux and macOS CI too.
+
+/** Real short paths, of the kind Windows hands us. All of these must run. */
+const SHORT_PATHS = [
+  "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\cloud9-abc",
+  "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\cloud9-abc",
+  "C:/Users/RUNNER~1/AppData/Local/Temp/cloud9-abc",
+  "C:\\PROGRA~1\\MICROS~1\\bin",          // two short segments in one path
+  "C:\\Users\\RUNNER~1\\LONGFI~1.TXT",    // a short FILE name, extension and all
+  "RUNNER~1\\sub",                        // relative — the segment can start the string
+  "C:\\Users\\RUNNER~1",                  // the segment can also end it
+];
+
+/** Every tilde shape a shell would actually expand. All of these must be refused. */
+const TILDE_EXPANSIONS = [
+  "~",
+  "~/x",
+  "~root/x",
+  "~root",
+  "~/.ssh/id_rsa",
+  "~1",                                   // digits, but nothing before the tilde
+  "~+/x",
+  "C:\\Users\\~1\\x",                     // tilde starts the segment
+  "C:\\Users\\ADMINI~\\x",                // tilde with no digits after it
+  "C:\\Users\\ADMINI~1x\\y",              // digits do not run to the end of the segment
+  "C:\\ABCDEFG~12345678\\x",              // far too long to be an 8.3 name
+  "PATH=~/x",                             // bash expands a tilde straight after `=`
+  "PATH=C:\\x:~/y",                       // ...and straight after a `:`
+];
+
+test("a Windows 8.3 short path is accepted by both gates", () => {
+  for (const value of SHORT_PATHS) {
+    assert.equal(safeArg(value), value, `refused: ${value}`);
+    assert.equal(shellQuote(value), value, `refused: ${value}`);
+    // and end to end, through the one place a command line is built
+    assert.equal(commandLine("git", ["-C", value, "status"]), `git -C ${value} status`);
+  }
+  // a short path with a space in it is still quoted, exactly as a long one is
+  assert.equal(
+    shellQuote("C:\\Users\\RUNNER~1\\Vik As\\a1"),
+    '"C:\\Users\\RUNNER~1\\Vik As\\a1"',
+  );
+});
+
+test("a tilde that a shell would expand is still refused", () => {
+  for (const value of TILDE_EXPANSIONS) {
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
+  // a lone tilde surrounded by spaces goes down the path branch; still refused
+  assert.throws(() => shellQuote("foo ~ bar"), UnsafeArgumentError);
+  assert.throws(() => shellQuote("foo ~/x bar"), UnsafeArgumentError);
+});
+
+test("a short path does not smuggle a metacharacter past the guard", () => {
+  // the point of the whole rule: recognising `RUNNER~1` must not soften ANY
+  // other part of the allowlist, so every nasty shape is still refused when it
+  // is glued onto a perfectly legitimate short path.
+  for (const nasty of NASTY) {
+    const value = `C:\\Users\\RUNNER~1\\${nasty}`;
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
+  // and a second tilde outside the shape is not covered by the first one
+  assert.throws(() => safeArg("C:\\Users\\RUNNER~1\\~/x"), UnsafeArgumentError);
+});
+
+// The five shapes below are PINS. They all behave correctly today; they are
+// written down so that a later widening of the rule cannot change any of them
+// without a test going red. Review of PR #48 asked for each one by name.
+
+test("PIN: a tilde straight after a flag's `=` is refused", () => {
+  // `--flag=~1` has digits after the tilde, so it is close to the accepted
+  // shape — but nothing precedes the tilde inside the segment, and in bash a
+  // tilde right after an unquoted `=` really does expand. It is the shape most
+  // likely to be waved through as "just a short name", so it is pinned first.
+  for (const value of ["--flag=~1", "--flag=~/x", "=~1"]) {
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
+});
+
+test("PIN: the colon family is refused", () => {
+  // bash also expands a tilde straight after a `:` in an assignment-shaped word,
+  // and a drive-relative `C:~1` is not a path segment either. None of these has
+  // a name character before the tilde that follows a path separator.
+  for (const value of [":~1", "a:b~1", "C:~1"]) {
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
+});
+
+test("PIN: a tilde anchored on a space is refused", () => {
+  // a space ends a word, so `~1` here IS word-initial and would expand.
+  assert.throws(() => shellQuote("a ~1"), UnsafeArgumentError);
+  assert.throws(() => safeArg("a ~1"), UnsafeArgumentError);
+});
+
+test("PIN: a checked FRAGMENT cannot smuggle a tilde into the finished argument", () => {
+  // `safeArg` is called on fragments that are then pasted into a bigger string
+  // (codex.ts:581 `…url=${safeArg(ticket.url)}`, codex.ts:727
+  // `model_reasoning_effort=${safeArg(effort)}`), so the `^` in the pattern
+  // anchors the FRAGMENT, not the argument. What protects the finished argument
+  // is the invariant — a name character immediately left of the tilde — plus
+  // `commandLine` checking the composed string all over again.
+
+  // 1. nothing before the tilde: refused at the fragment gate, so the fragment
+  //    can never contribute a leading tilde to whatever it is pasted into.
+  assert.throws(() => safeArg("~1"), UnsafeArgumentError);
+
+  // 2. a name character before the tilde: the fragment passes on its own...
+  assert.equal(safeArg("A~1"), "A~1");
+  // ...and the COMPOSED argument is then refused by the real gate, because
+  // there the `A` follows an `=` rather than a path separator.
+  assert.throws(
+    () => commandLine("codex", ["-c", "model_reasoning_effort=A~1"]),
+    UnsafeArgumentError,
+  );
+
+  // 3. the case the rule actually exists for — a tilde genuinely inside a path
+  //    segment — passes both the fragment gate and the composed gate.
+  const url = "mcp_servers.cloud9.url=C:\\Users\\RUNNER~1\\sock";
+  assert.equal(safeArg(url), url);
+  assert.equal(commandLine("codex", ["-c", url]), `codex -c ${url}`);
+});
+
+test("PIN: a backslash counts as a separator on every platform, and that is safe", () => {
+  // The pattern treats `\` as a path separator unconditionally, so `a\b~1` is
+  // masked and accepted even on Linux, where `\` is an escape character rather
+  // than a separator. That is deliberate and it is safe: the tilde still has
+  // `b` immediately to its left, so it is mid-word in every shell, and `sh`
+  // resolving `a\b~1` to `ab~1` leaves it mid-word too.
+  assert.equal(safeArg("a\\b~1"), "a\\b~1");
+  assert.equal(shellQuote("a\\b~1"), "a\\b~1");
+  // the invariant is what carries it — remove the character before the tilde
+  // and it is refused again, on this platform and every other one.
+  assert.throws(() => safeArg("a\\~1"), UnsafeArgumentError);
+});
+
+test("run() no longer refuses its own short temp path", async () => {
+  // The class, at the boundary that actually broke. `run()` REJECTS an unsafe
+  // argument before it spawns anything (the "refuses to execute an unsafe
+  // argument at all" test below is the other side of this), so a short path used
+  // to come back as an `UnsafeArgumentError` and never reach the command at all.
+  // Now it gets through the guard and the run reports on the COMMAND rather than
+  // on the argument. The command is deliberately one that does not exist, so
+  // nothing is executed either way and the two outcomes cannot be confused.
+  const short = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\cloud9-abc";
+  const r = await run("cloud9-no-such-command", ["-C", short]);
+  assert.equal(r.notFound, true);
+  // and the opposite case is unchanged, on the very same short path
+  await assert.rejects(
+    () => run("cloud9-no-such-command", ["-C", `${short}&&echo pwned`]),
+    UnsafeArgumentError,
+  );
+});
+// ===== WINDOWS 8.3 SHORT PATHS — end =====
 
 test("a model id with shell metacharacters is rejected, not escaped", () => {
   // gate 1: the shared validator the relay uses

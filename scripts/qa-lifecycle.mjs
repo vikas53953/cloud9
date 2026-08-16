@@ -35,8 +35,8 @@ try {
   await p.click('.rail-btn[data-go="chat"]');
   await p.click(".sidebar >> text=# general");
   await p.waitForSelector(".sidebar >> text=Echo");
-  const chanSel = await p.$$eval(".chathead select option", os => os.find(o => o.textContent.includes("Echo"))?.value);
-  await p.selectOption(".chathead select", chanSel);
+  const chanSel = await p.$$eval('.chathead select[aria-label="Add someone to this room"] option', os => os.find(o => o.textContent.includes("Echo"))?.value);
+  await p.selectOption('.chathead select[aria-label="Add someone to this room"]', chanSel);
 
   const box = p.locator(".composer textarea");
 

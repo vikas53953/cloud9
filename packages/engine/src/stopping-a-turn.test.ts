@@ -272,6 +272,25 @@ test("'!stop' typed in the room stops the agent, and only a person may type it",
   assert.equal(provider.started, 1, "and '!stop' did not itself start another turn");
 });
 
+test("a stable-id stop targets an agent whose display name has spaces and emoji", async () => {
+  const provider = new HangingProvider();
+  const target = agent({ id: "a-data-scout", name: "Data Scout 🚀" });
+  const { engine, frames } = makeEngine(provider, [target]);
+  const turn = engine.takeTurn(target, "c1", { ...trigger, text: "find the report" });
+  await untilWorking(engine, target.id);
+
+  await say(engine, {
+    id: "m-stable-stop", channelId: "c1", authorId: OWNER, authorName: "Vikas",
+    authorKind: "human", text: `!stop ${target.id}`, ts: 3,
+  });
+  provider.release();
+  await turn;
+
+  assert.match(agentSends(frames).join("\n"), /Stopping/i,
+    "the stable-id command reaches the exact live agent despite its display name");
+  assert.equal(provider.started, 1, "the stop command did not start a second turn");
+});
+
 test("'!stop' with nothing running says nothing was running, rather than going quiet", async () => {
   const { engine, frames } = makeEngine(new HangingProvider());
   await say(engine, {

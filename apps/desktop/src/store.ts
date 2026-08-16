@@ -3,19 +3,23 @@ import { useCallback, useRef, useSyncExternalStore } from "react";
 import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
   ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
-  Attachment, ATTACHMENT_LIMITS, Channel,
+  Attachment, ATTACHMENT_LIMITS, Channel, downloadContentType,
+  ChatDraft, DraftAttachment, ChannelMemoryMode, ChannelMemoryPolicy,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
+  ThreadSummaryResult, validateThreadSummaryResult,
   MemoryNote,
   NotificationInboxEntry,
-  SavedMessageEntry,
-  EverywhereHit, SearchKind,
-  ReachCatchup,
+  SavedMessageEntry, ChannelPinEntry,
+  EverywhereHit, SearchKind, HumanTyping,
+  ReachCatchup, MessageStatus,
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlockKind, CanvasLink,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
+  RecoveryDecision, RecoveryMode, RunComparison,
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
   SocialLink, SocialPost,
+  RichLinkPreview, RichLinkRef, richLinkKey,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
   UnreadEntry, User,
@@ -33,9 +37,10 @@ import {
 } from "@cloud9/shared";
 // Semantic receipts live in their own tiny ephemeral store, on purpose — see
 // the header of that file. This is the only line of this module that knows.
-import { noteReceipt } from "./receipts.js";
+import { clearReceipts, noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
-import { noteLiveSteps } from "./livesteps.js";
+import { clearLiveSteps, noteLiveSteps } from "./livesteps.js";
+import { clearAgentResponses, noteAgentMessage, noteAgentResponse } from "./responsestream.js";
 
 type WorkflowRequestFrame = Extract<ClientFrame, {
   type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
@@ -48,6 +53,10 @@ function workflowOrder(a: Workflow, b: Workflow): number {
 
 type SavedRequestFrame = Extract<ClientFrame, {
   type: "listSaved" | "saveMessage" | "unsaveMessage"
+}>;
+
+type ChannelPinRequestFrame = Extract<ClientFrame, {
+  type: "listChannelPins" | "pinMessage" | "unpinMessage"
 }>;
 
 /**
@@ -133,6 +142,50 @@ export interface Upload {
   error?: string;
   /** what to name in `send` once it is up */
   attachmentId?: ID;
+  /** optional thread target; room and thread trays never share ids */
+  threadId?: ID;
+  /** local-only preview URL; never serialized into a draft or sent to relay */
+  previewUrl?: string;
+  /** real FileReader progress while bytes are being read; upload itself is not faked as a percentage */
+  progress?: number;
+  /** what the tile is doing; durable rows use `ready`/`failed` after restore */
+  phase?: "reading" | "uploading" | "ready" | "failed";
+  /** relay-owned draft state when restored after a restart */
+  draftState?: "available" | "expired" | "unavailable" | "deleted" | "removed";
+  uploadedAt?: number;
+  expiresAt?: number;
+  mime?: string;
+  /**
+   * False only between this window receiving a new hub attachment id and a
+   * relay draft projection carrying that id. An older draft answer cannot
+   * erase that newer local intent; once projected, normal authoritative
+   * reconciliation applies again.
+   */
+  draftSynced?: boolean;
+}
+
+/**
+ * Local previews are deliberately narrower than the relay's download allowlist.
+ * A browser object URL is safe for ordinary raster images and audio controls;
+ * SVG/HTML and every document type stay a named file even when their extension
+ * happens to look renderable. MIME and extension must agree when the browser
+ * provided a MIME; an empty MIME can still use the validated safe extension.
+ */
+export type UploadPreviewKind = "image" | "audio";
+const LOCAL_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"]);
+const LOCAL_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon"]);
+const LOCAL_AUDIO_EXTENSIONS = new Set(["webm", "wav", "mp3", "m4a", "ogg", "oga", "aac"]);
+const LOCAL_AUDIO_TYPES = new Set(["audio/webm", "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/aac"]);
+
+export function uploadPreviewKind(name: string, mime?: string): UploadPreviewKind | undefined {
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  const type = (mime ?? "").split(";", 1)[0].trim().toLowerCase();
+  if (LOCAL_IMAGE_EXTENSIONS.has(extension)
+    && (!type ? downloadContentType(name).startsWith("image/") : LOCAL_IMAGE_TYPES.has(type))) return "image";
+  if (LOCAL_AUDIO_EXTENSIONS.has(extension)
+    && (!type || LOCAL_AUDIO_TYPES.has(type))) return "audio";
+  return undefined;
 }
 
 /**
@@ -200,6 +253,18 @@ export interface PulseState {
   problem?: string;
 }
 
+export interface ChannelPinsState {
+  asked: boolean;
+  loading: boolean;
+  entries: ChannelPinEntry[];
+  hasMore: boolean;
+  nextPinnedAt?: number;
+  nextMessageId?: ID;
+  requestId?: ID;
+  revision?: number;
+  problem?: string;
+}
+
 const emptyArtifactWorkspace = (loading = false): ArtifactWorkspacePage => ({
   asked: false, loading, entries: [], hasMore: true,
   capacity: ARTIFACT_LIMITS.workspaceDefault,
@@ -214,6 +279,18 @@ export interface ArtifactAccessSaveState {
   problem?: string;
 }
 
+/** Durable correlation state for a handoff request on this desktop. */
+export interface HandoffRequestState {
+  requestId: ID;
+  sourceMessageId: ID;
+  channelId: ID;
+  agentId: ID;
+  title: string;
+  state: "pending" | "succeeded" | "refused" | "lost";
+  taskId?: ID;
+  problem?: string;
+}
+
 export interface World {
   connected: boolean;
   authFailed: boolean;
@@ -221,7 +298,12 @@ export interface World {
   users: User[];
   agents: AgentDef[];
   channels: Channel[];
+  channelMemoryPolicies: ChannelMemoryPolicy[];
   messages: Record<ID, Message[]>; // by channel
+  /** Author-only accepted/delivered/read projections keyed by canonical id. */
+  messageStatuses: Record<ID, MessageStatus>;
+  /** Ephemeral live typing, keyed by channel; never persisted or included in history. */
+  humanTyping: Record<ID, HumanTyping[]>;
   agentStatus: Record<ID, AgentStatus>;
   /**
    * CAN THIS AGENT ACTUALLY BE USED RIGHT NOW — the hub's answer, never ours.
@@ -247,6 +329,9 @@ export interface World {
   /** Where the live connection stands, in one plain sentence (`connInWords`). */
   hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
+  handoffs: Record<ID, HandoffRequestState>;
+  /** Correlated inline message-to-task mutations, including lost/refused state. */
+  taskMutations: Record<ID, { state: "pending" | "succeeded" | "refused" | "lost"; taskId?: ID; sourceMessageId?: ID; problem?: string }>;
   approvals: Approval[];
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
@@ -277,6 +362,9 @@ export interface World {
   savedPending: ID[];
   /** Set when a save arrives while the Saved screen is not open. */
   savedNew: boolean;
+  /** Shared pins, keyed by channel; absent means this client has not asked. */
+  channelPins: Record<ID, ChannelPinsState>;
+  channelPinPending: ID[];
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -298,6 +386,10 @@ export interface World {
   pages: Record<ID, Page>;
   /** one thread's messages, keyed by the id of the message that started it */
   threads: Record<ID, Message[]>;
+  /** Explicit, relay/provider-backed summaries keyed by their request id. */
+  threadSummaries: Record<ID, ThreadSummaryResult>;
+  /** Requests whose terminal summary result has not arrived yet. */
+  threadSummaryPending: Record<ID, true>;
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines. There is no browser copy of this any more.
@@ -321,6 +413,8 @@ export interface World {
   prepended: number;
   /** files being sent up from this machine, by conversation */
   uploads: Record<ID, Upload[]>;
+  /** Relay-owned durable composer drafts keyed by channel and optional thread. */
+  drafts: Record<string, ChatDraft>;
   /** attached files this screen has opened, by attachment id */
   files: Record<ID, OpenFile>;
   /**
@@ -368,6 +462,10 @@ export interface World {
    * ever waiting for an answer that already came.
    */
   runsGone: Record<string, true>;
+  /** Recovery action availability and latest comparison, all from relay facts. */
+  runRecovery: Record<string, { decision: RecoveryDecision; requestId?: ID; mode?: RecoveryMode; authorizationToken?: string; pending?: boolean; problem?: string }>;
+  runComparisons: Record<string, RunComparison>;
+  runComparisonProblems: Record<string, string>;
   /**
    * THE REPOSITORIES THIS PERSON HAS CONNECTED, and what is open in each.
    *
@@ -467,6 +565,8 @@ export interface World {
    * that had already come back as a "no".
    */
   artifactsGone: Record<ID, true>;
+  /** Per-message metadata returned only after the relay projected link access. */
+  richLinkPreviews: Record<ID, { asked: boolean; loading: boolean; refsKey: string; refs: RichLinkRef[]; previews: RichLinkPreview[] }>;
   /**
    * Which files are in one conversation, by channel — ids only, so there is one
    * copy of an artifact (above) and not a second one per room.
@@ -700,16 +800,17 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], handoffs: {}, taskMutations: {}, approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
     savedMessages: [], savedLoading: false, savedAsked: false,
     savedRequestId: undefined, savedProblem: undefined, savedNotice: undefined,
     savedRevision: 0, savedHasMore: false, savedPending: [], savedNew: false,
-    pages: {}, threads: {}, unread: {}, prepended: 0,
-    uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
-    runs: {}, runLists: {}, runsGone: {},
+    channelPins: {}, channelPinPending: [],
+    pages: {}, threads: {}, threadSummaries: {}, threadSummaryPending: {}, unread: {}, prepended: 0,
+    uploads: {}, drafts: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
+    runs: {}, runLists: {}, runsGone: {}, runRecovery: {}, runComparisons: {}, runComparisonProblems: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] }, canvases: { asked: false, list: [], history: [] },
@@ -720,15 +821,20 @@ export class RelayClient {
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
     pulse: { asked: false, loading: false, updates: [], unreadByProject: {}, projects: [] },
     repoChoices: { asked: false, asking: false },
-    artifacts: {}, artifactsGone: {}, channelArtifacts: {},
+    artifacts: {}, artifactsGone: {}, richLinkPreviews: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
     artifactRelations: {}, artifactRelationsTruncated: {}, artifactDetailProblems: {},
     memory: {},
+    channelMemoryPolicies: [],
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
   /** Frames from a socket that has been replaced never reach the new world. */
   private socketEpoch = 0;
+  private humanTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private recoveryTimers = new Map<ID, ReturnType<typeof setTimeout>>();
+  private comparisonTimers = new Map<ID, ReturnType<typeof setTimeout>>();
+  private comparisonRequests = new Map<ID, string>();
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
 
@@ -814,7 +920,19 @@ export class RelayClient {
     this.recovering = false;
     this.world.authFailed = false;
     this.world.lastError = undefined;
+    // A hub switch is a new live session even if the old socket has not fired
+    // its close event yet. This false -> true edge lets a focused composer
+    // re-advertise genuine typing after the new welcome, instead of leaving a
+    // remote room with a stale/quiet indicator.
+    this.world.connected = false;
+    this.clearHumanTyping(undefined, undefined, false);
+    this.world.humanTyping = {};
+    // A new socket epoch owns its own correlated task receipts. Keep only the
+    // lost rows re-added by the callbacks below; never carry a stale pending
+    // creation into another hub/session.
+    this.world.taskMutations = {};
     // questions asked of the last connection will never be answered by this one
+    this.clearAllUploads();
     const orphaned = this.asked;
     this.asked = [];
       this.loseForumRequests();
@@ -871,6 +989,12 @@ export class RelayClient {
   }
 
   private openSocketTo(url: string): void {
+    // Public activity belongs to one live socket epoch. A reconnect has no
+    // authority to keep showing a previous engine's in-flight preview.
+    clearLiveSteps();
+    clearReceipts();
+    clearAgentResponses();
+    this.clearAllUploads();
     this.ws?.close();
     const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
@@ -885,12 +1009,20 @@ export class RelayClient {
       // A newer socket has already taken over (a switch or a retry) — this close
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
+      clearLiveSteps();
+      clearReceipts();
+      clearAgentResponses();
+      this.clearAllUploads();
+      this.clearHumanTyping(undefined, undefined, false);
+      this.world.humanTyping = {};
+      this.world.richLinkPreviews = {};
       this.world.connected = false;
       // Settle every lifecycle row before dropping request maps. Mutation
       // callbacks clear their own pending IDs and leave a scoped retry notice;
       // simply clearing the maps used to lose that intent silently.
       const orphaned = this.asked;
       this.asked = [];
+      this.world.taskMutations = {};
       for (const a of orphaned) a.lost?.();
       // Request ids belong to this socket epoch. A late workflow response from
       // the dropped socket must never settle a new window's run/archive/stop
@@ -898,6 +1030,7 @@ export class RelayClient {
       // snapshot is the source of truth for the next epoch.
       this.workflowRequests.clear();
       this.savedRequests.clear();
+      this.channelPinRequests.clear();
       this.pulseMutationRequestId = undefined;
       this.pulseAcceptedRequestId = undefined;
       this.pulseReadRequests.clear();
@@ -915,6 +1048,8 @@ export class RelayClient {
       // fire-and-forget row that never entered the lifecycle ledger.
       this.world.savedPending = this.world.savedPending.filter(messageId =>
         [...this.savedRequests.values()].some(frame => frame.type !== "listSaved" && frame.messageId === messageId));
+      this.world.channelPins = {};
+      this.world.channelPinPending = [];
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
@@ -1183,6 +1318,10 @@ export class RelayClient {
   private asked: Asked[] = [];
   private workflowRequests = new Map<ID, WorkflowRequestFrame>();
   private savedRequests = new Map<ID, SavedRequestFrame>();
+  private channelPinRequests = new Map<ID, ChannelPinRequestFrame>();
+  private draftRequests = new Map<ID, ClientFrame>();
+  /** One stable client send id per draft scope and payload until acceptance. */
+  private pendingSendIntents = new Map<string, { signature: string; clientMessageId: ID }>();
   /** Mutation receipts currently expected; late direct frames are ignored. */
   private loseForumRequests(): void {
     const live = this.asked;
@@ -1241,7 +1380,9 @@ export class RelayClient {
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
     const requestId = typeof frame.requestId === "string" && frame.requestId.length > 0
       ? frame.requestId : this.nextRequestId(frame.type);
-    return { ...frame, requestId };
+    return frame.type === "send"
+      ? { ...frame, requestId, clientMessageId: frame.clientMessageId ?? requestId }
+      : { ...frame, requestId };
   }
 
   /**
@@ -1254,6 +1395,13 @@ export class RelayClient {
   private transmit(frame: ClientFrame, waiting: Omit<Asked, "kind" | "requestId"> = {}): ID | undefined {
     const ws = this.ws;
     if (ws?.readyState !== WebSocket.OPEN) return undefined;
+    // Typing is a live signal, not a request. Keep it free of request ids so
+    // no lifecycle ledger (or direct refusal UI) can mistake it for durable
+    // work, and so older peers can safely ignore the new frame type.
+    if (frame.type === "typing") {
+      ws.send(JSON.stringify(frame));
+      return undefined;
+    }
     const outgoing = this.identify(frame);
     ws.send(JSON.stringify(outgoing));
     // `hello` is the one frame asked before there is a conversation to have.
@@ -1283,6 +1431,19 @@ export class RelayClient {
   }
 
   /**
+   * Remove one lifecycle row without invoking its lost callback.
+   *
+   * Upload cleanup uses this when access disappears or a socket is replaced:
+   * the row is being removed, not failed, and invoking `lost` would otherwise
+   * start the next queued upload while the old connection is already gone.
+   * The timeout closure sees the row is absent and therefore becomes a no-op.
+   */
+  private removeAsked(requestId: ID): void {
+    const i = this.asked.findIndex(entry => entry.requestId === requestId);
+    if (i >= 0) this.asked.splice(i, 1);
+  }
+
+  /**
    * Hand one answer to the ONE question that recognises it.
    *
    * A pushed artifact can arrive between two unrelated questions, and a late
@@ -1308,9 +1469,294 @@ export class RelayClient {
     settled.refused?.(frame.error);
   }
 
-  /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
+  private humanTypingKey(channelId: ID, userId: ID): string {
+    return `${channelId}\u0000${userId}`;
+  }
+
+  private clearHumanTyping(channelId?: ID, userId?: ID, notify = true): void {
+    const next: Record<ID, HumanTyping[]> = {};
+    let changed = false;
+    for (const [cid, entries] of Object.entries(this.world.humanTyping)) {
+      const kept = entries.filter(entry => {
+        const matches = (channelId === undefined || cid === channelId)
+          && (userId === undefined || entry.userId === userId);
+        return !matches;
+      });
+      if (kept.length !== entries.length) changed = true;
+      if (kept.length > 0) next[cid] = kept;
+    }
+    for (const [key, timer] of this.humanTypingTimers) {
+      const [cid, uid] = key.split("\u0000");
+      const matches = (channelId === undefined || cid === channelId)
+        && (userId === undefined || uid === userId);
+      if (matches) { clearTimeout(timer); this.humanTypingTimers.delete(key); }
+    }
+    if (changed) {
+      this.world.humanTyping = next;
+      if (notify) this.emit();
+    }
+  }
+
+  /** Send one request-independent signal. Callers gate active state on the UI. */
+  setTyping(channelId: ID, typing: boolean): void {
+    this.transmit({ type: "typing", channelId, typing });
+  }
+
+  private clientMessageKey(frame: Extract<ClientFrame, { type: "send" }>): string {
+    return JSON.stringify([frame.channelId, frame.text, frame.replyTo ?? null, frame.attachmentIds ?? [], frame.invocation ?? null]);
+  }
+
+  private nextClientMessageId(): ID {
+    this.clientMessageSequence++;
+    return `cm_${Date.now().toString(36)}_${this.clientMessageSequence.toString(36)}`;
+  }
+
+  /** Fire-and-forget still returns the exact transport id; message identity is separate and stable. */
   send(frame: ClientFrame): ID | undefined {
+    if (frame.type === "send") {
+      const key = this.clientMessageKey(frame);
+      const clientMessageId = frame.clientMessageId ?? frame.tempId ?? this.pendingClientMessageIds.get(key) ?? this.nextClientMessageId();
+      this.pendingClientMessageIds.set(key, clientMessageId);
+      return this.transmit({ ...frame, clientMessageId, tempId: frame.tempId ?? clientMessageId });
+    }
     return this.transmit(frame);
+  }
+
+  /** Send a handoff with a correlated lifecycle; no click is treated as success. */
+  createHandoff(frame: Extract<ClientFrame, { type: "createTask" }>): ID | undefined {
+    if (!frame.sourceMessageId || !frame.channelId || !frame.agentId || !frame.title.trim()) return undefined;
+    const requestId = this.nextRequestId("createTask");
+    const entry: HandoffRequestState = {
+      requestId, sourceMessageId: frame.sourceMessageId, channelId: frame.channelId,
+      agentId: frame.agentId, title: frame.title, state: "pending",
+    };
+    const setState = (patch: Partial<HandoffRequestState>): void => {
+      const current = this.world.handoffs[requestId] ?? entry;
+      this.world.handoffs = { ...this.world.handoffs, [requestId]: { ...current, ...patch } };
+      const rows = Object.entries(this.world.handoffs);
+      if (rows.length > 100) this.world.handoffs = Object.fromEntries(rows.slice(-100));
+      this.emit();
+    };
+    setState(entry);
+    const id = this.transmit({ ...frame, requestId }, {
+      answers: response => response.type === "task" && response.requestId === requestId,
+      answered: response => {
+        if (response.type === "task") setState({ state: "succeeded", taskId: response.task.id, problem: undefined });
+      },
+      refused: problem => setState({ state: "refused", problem }),
+      lost: () => setState({ state: "lost", problem: this.world.connected
+        ? "The relay did not confirm this handoff. Retry when connected."
+        : "Cloud9 disconnected before this handoff was confirmed. Retry when connected." }),
+    });
+    if (id === undefined) {
+      setState({ state: "lost", problem: "Cloud9 is offline; no task was created. Retry when connected." });
+      return undefined;
+    }
+    return id;
+  }
+
+  private reconcileHandoffs(tasks: readonly Task[]): void {
+    let changed = false;
+    const next = { ...this.world.handoffs };
+    for (const [requestId, handoff] of Object.entries(next)) {
+      if (handoff.state !== "pending" && handoff.state !== "lost") continue;
+      const task = tasks.find(candidate => candidate.sourceMessageId === handoff.sourceMessageId
+        && candidate.channelId === handoff.channelId && candidate.agentId === handoff.agentId);
+      if (task) {
+        next[requestId] = { ...handoff, state: "succeeded", taskId: task.id, problem: undefined };
+        changed = true;
+      } else if (handoff.state === "pending") {
+        next[requestId] = { ...handoff, state: "lost", problem: "The relay reconnected without confirming this handoff. Retry when connected." };
+        changed = true;
+      }
+    }
+    if (changed) this.world.handoffs = next;
+  }
+
+  /** Turn one accessible human message into durable work with a settled receipt. */
+  createTaskFromMessage(input: {
+    agentId: ID; channelId: ID; title: string; sourceMessageId: ID;
+    sourceThreadId?: ID; deadlineAt?: number;
+  }): ID | undefined {
+    const requestId = this.nextRequestId("createTask");
+    const set = (state: "pending" | "succeeded" | "refused" | "lost", problem?: string, taskId?: ID): void => {
+      this.world.taskMutations = {
+        ...this.world.taskMutations, [requestId]: { state, sourceMessageId: input.sourceMessageId,
+          ...(problem ? { problem } : {}), ...(taskId ? { taskId } : {}) },
+      };
+      this.emit();
+    };
+    const sent = this.transmit({
+      type: "createTask", agentId: input.agentId, channelId: input.channelId,
+      title: input.title, sourceMessageId: input.sourceMessageId,
+      ...(input.sourceThreadId ? { sourceThreadId: input.sourceThreadId } : {}),
+      ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}), requestId,
+    }, {
+      answers: frame => frame.type === "task" && frame.requestId === requestId,
+      answered: frame => { if (frame.type === "task") set("succeeded", undefined, frame.task.id); },
+      refused: problem => set("refused", problem),
+      lost: () => set("lost", "Cloud9 disconnected before it confirmed this task; try again when the relay answers."),
+    });
+    if (sent === undefined) {
+      set("lost", "Cloud9 is offline; this task was not sent.");
+      return undefined;
+    }
+    set("pending");
+    return requestId;
+  }
+
+  private canonicalDraftThreadId(threadId?: ID): ID | undefined {
+    if (!threadId) return undefined;
+    for (const messages of Object.values(this.world.messages)) {
+      const found = messages.find(message => message.id === threadId);
+      if (found) return found.replyTo ?? found.id;
+    }
+    for (const [rootId, messages] of Object.entries(this.world.threads)) {
+      if (rootId === threadId) return rootId;
+      const found = messages.find(message => message.id === threadId);
+      if (found) return found.replyTo ?? rootId;
+    }
+    return threadId;
+  }
+
+  private draftKey(channelId: ID, threadId?: ID): string {
+    return `${channelId}\u0000${this.canonicalDraftThreadId(threadId) ?? ""}`;
+  }
+
+  private uploadThreadId(threadId?: ID): ID | undefined {
+    return this.canonicalDraftThreadId(threadId);
+  }
+
+  draft(channelId: ID, threadId?: ID): ChatDraft | undefined {
+    return this.world.drafts[this.draftKey(channelId, threadId)];
+  }
+
+  /** Ask for durable drafts and reconcile parked attachment ids on every reopen. */
+  listDrafts(channelId?: ID, threadId?: ID, onSettled?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftList");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftList", ...(channelId ? { channelId } : {}), ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "drafts" && f.requestId === requestId,
+      answered: () => onSettled?.(),
+      refused: why => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still on this computer.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) {
+      this.draftRequests.delete(requestId);
+      // Treat an unavailable relay as a settled sync attempt. This lets the
+      // composer continue its local-only fallback rather than waiting forever
+      // for a response that cannot arrive.
+      onSettled?.();
+    }
+    return sent ? requestId : undefined;
+  }
+
+  reconcileDrafts(channelId?: ID, threadId?: ID): ID | undefined {
+    const requestId = this.nextRequestId("draftReconcile");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftReconcile", ...(channelId ? { channelId } : {}), ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "drafts" && f.requestId === requestId,
+      refused: why => { this.draftRequests.delete(requestId); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) this.draftRequests.delete(requestId);
+    return sent ? requestId : undefined;
+  }
+
+  updateDraft(draft: Omit<ChatDraft, "id" | "updatedAt" | "expiresAt" | "state"> & Partial<Pick<ChatDraft, "id" | "updatedAt" | "expiresAt" | "state">>, onLost?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftUpdate");
+    const attachments = draft.attachments.filter((a, index, all) =>
+      all.findIndex(candidate => candidate.id === a.id) === index);
+    const frame: ClientFrame = {
+      type: "draftUpdate", channelId: draft.channelId, ...(this.canonicalDraftThreadId(draft.threadId) ? { threadId: this.canonicalDraftThreadId(draft.threadId) } : {}),
+      text: draft.text, ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
+      attachments: attachments.map(a => ({ ...a })), requestId,
+    };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.transmit(frame, {
+      answers: f => f.type === "draftChanged" && f.requestId === requestId,
+      refused: why => { this.draftRequests.delete(requestId); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); onLost?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) { this.draftRequests.delete(requestId); onLost?.(); }
+    return sent;
+  }
+
+  removeDraft(channelId: ID, threadId?: ID, onSettled?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftRemove");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftRemove", channelId, ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "draftRemoved" && f.requestId === requestId,
+      // Keep the request in draftRequests until onFrame's draftRemoved case
+      // applies the correlated removal. Deleting here would make that case
+      // treat the response as an unrelated push and leave the stale row.
+      answered: () => { onSettled?.(); },
+      lost: () => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+      refused: why => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) { this.draftRequests.delete(requestId); onSettled?.(); }
+    return sent ? requestId : undefined;
+  }
+
+  restoreDraftUploads(draft: ChatDraft): void {
+    const current = this.world.uploads[draft.channelId] ?? [];
+    const threadId = this.uploadThreadId(draft.threadId);
+    const scope = (u: Upload): boolean => (this.uploadThreadId(u.threadId) ?? "") === (threadId ?? "");
+    const authoritative = draft.attachments
+      .filter((a, _index, all) => a.state !== "removed"
+        && all.find(candidate => candidate.state !== "removed" && candidate.id === a.id) === a);
+    const draftIds = new Set(authoritative.map(a => a.id));
+    const projectedIds = new Set(draft.attachments.map(a => a.id));
+    const prior = new Map<ID, Upload>();
+    const held = current.filter(u => scope(u) && (!u.attachmentId
+      || (u.draftSynced === false && !projectedIds.has(u.attachmentId))));
+    // The relay projection is authoritative for every row that already has a
+    // hub id. Only no-id rows are same-session transient work; an id missing
+    // from this authoritative draft was removed/reclaimed and must disappear.
+    for (const upload of current) {
+      if (!scope(upload) || !upload.attachmentId) continue;
+      if (draftIds.has(upload.attachmentId) && !prior.has(upload.attachmentId)) {
+        prior.set(upload.attachmentId, upload);
+        continue;
+      }
+      // A draft response can have been created while this upload was still in
+      // flight. Until any relay projection includes the new id, that response
+      // is older than this window's local attachment intent and cannot erase
+      // it. This is a causal fence, not a wall-clock comparison: server
+      // processing can legitimately invert uploadedAt and draft.updatedAt.
+      if (upload.draftSynced === false && !projectedIds.has(upload.attachmentId)) continue;
+      if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+    }
+    const restored: Upload[] = authoritative
+      .map(a => {
+        const existing = prior.get(a.id);
+        return ({
+        localId: existing?.localId ?? `draft_${a.id}`, name: a.name, size: a.size,
+        state: a.state === "available" ? "done" : "failed",
+        attachmentId: a.id, threadId, mime: a.mime,
+        uploadedAt: a.uploadedAt, expiresAt: a.expiresAt,
+        draftSynced: true,
+        phase: a.state === "available" ? "ready" : "failed", progress: a.state === "available" ? 100 : undefined,
+        ...(existing?.previewUrl ? { previewUrl: existing.previewUrl } : {}),
+        draftState: a.state, ...(a.error ? { error: a.error } : {}),
+      });
+      });
+    const other = current.filter(u => !scope(u));
+    const next = [...other, ...held, ...restored];
+    const same = current.length === next.length && current.every((u, i) => {
+      const n = next[i];
+      return n && u.localId === n.localId && u.state === n.state && u.attachmentId === n.attachmentId
+        && u.error === n.error && u.threadId === n.threadId && u.draftSynced === n.draftSynced;
+    });
+    if (same) return;
+    this.world.uploads = { ...this.world.uploads, [draft.channelId]: next };
+    this.emit();
   }
 
   listWorkflows(): ID | undefined {
@@ -1387,8 +1833,43 @@ export class RelayClient {
    */
   submit(problem: string | null, frame: ClientFrame, say?: (why: string) => void): boolean {
     if (this.refused(problem, say)) return false;
-    this.send(frame);
+    if (this.send(frame) === undefined) {
+      (say ?? ((why: string) => this.notify(why)))("Cloud9 is offline. Your message is still in the box.");
+      return false;
+    }
     return true;
+  }
+
+  /** Send a chat message and clear its draft only after the correlated accept. */
+  submitMessage(problem: string | null, frame: Extract<ClientFrame, { type: "send" }>,
+    accepted: () => void, lost?: (why: string) => void): ID | undefined {
+    if (this.refused(problem, why => lost?.(why))) return undefined;
+    const threadId = this.canonicalDraftThreadId(frame.replyTo);
+    const scopeKey = this.draftKey(frame.channelId, threadId);
+    const attachmentIds = [...new Set(frame.attachmentIds ?? [])];
+    const signature = JSON.stringify([
+      frame.channelId, frame.text, threadId ?? null, attachmentIds, frame.invocation ?? null,
+    ]);
+    const prior = this.pendingSendIntents.get(scopeKey);
+    // A payload change starts a fresh intent. An uncertain/lost attempt keeps
+    // its id, so a later manual retry can ask the relay for the same receipt.
+    const clientMessageId = prior?.signature === signature
+      ? prior.clientMessageId
+      : (prior ? this.nextRequestId("send") : (frame.clientMessageId ?? this.nextRequestId("send")));
+    const pending = { signature, clientMessageId };
+    this.pendingSendIntents.set(scopeKey, pending);
+    const requestId = this.nextRequestId("send");
+    const sent = this.transmit({ ...frame, requestId, clientMessageId, attachmentIds }, {
+      answers: f => f.type === "message" && f.requestId === requestId,
+      answered: () => {
+        if (this.pendingSendIntents.get(scopeKey) === pending) this.pendingSendIntents.delete(scopeKey);
+        accepted();
+      },
+      refused: why => lost?.(why),
+      lost: () => lost?.("Cloud9 disconnected before it accepted your message. Your draft is still here."),
+    });
+    if (!sent) lost?.("Cloud9 is offline. Your message is still in the box.");
+    return sent;
   }
 
   /**
@@ -1498,8 +1979,18 @@ export class RelayClient {
   /* ---------------- read state ---------------- */
 
   /** "I have read this conversation up to here." Kept on the account, not here. */
-  markRead(channelId: ID, ts?: number): void {
-    this.send({ type: "markRead", channelId, ts });
+  markRead(channelId: ID, ts?: number, messageId?: ID): void {
+    this.send({ type: "markRead", channelId, ...(ts !== undefined ? { ts } : {}), ...(messageId ? { messageId } : {}) });
+  }
+
+  /** Recover one lost send acknowledgement using the author-only relay query. */
+  askMessageStatus(messageId?: ID, clientMessageId?: ID): ID | undefined {
+    const requestId = this.nextRequestId("messageStatus");
+    return this.send({ type: "messageStatus", ...(messageId ? { messageId } : {}), ...(clientMessageId ? { clientMessageId } : {}), requestId });
+  }
+
+  messageStatus(messageId: ID): MessageStatus | undefined {
+    return this.world.messageStatuses[messageId];
   }
 
   /** Fetch the relay-owned, durable mention/thread-reply inbox. */
@@ -1676,6 +2167,133 @@ export class RelayClient {
     const stillWaiting = [...this.savedRequests.values()].some(frame =>
       frame.type !== "listSaved" && frame.messageId === messageId);
     if (!stillWaiting) this.world.savedPending = this.world.savedPending.filter(id => id !== messageId);
+  }
+
+  /** Fetch one channel's canonical shared pin list, with a relay-owned cursor. */
+  askChannelPins(channelId: ID, beforePinnedAt?: number, beforeMessageId?: ID): void {
+    const prior = this.world.channelPins[channelId] ?? {
+      asked: false, loading: false, entries: [], hasMore: false,
+    };
+    const append = beforePinnedAt !== undefined && beforeMessageId !== undefined;
+    const requestId = this.nextRequestId("listChannelPins");
+    this.world.channelPins = {
+      ...this.world.channelPins,
+      [channelId]: { ...prior, loading: true, problem: undefined, requestId },
+    };
+    this.emit();
+    const frame: ChannelPinRequestFrame = {
+      type: "listChannelPins", channelId,
+      ...(append ? { beforePinnedAt, beforeMessageId } : {}),
+    };
+    this.channelPinRequests.set(requestId, frame);
+    const sent = this.ask({ ...frame, requestId }, {
+      answers: f => f.type === "channelPins" && f.channelId === channelId && f.requestId === requestId,
+      answered: f => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId || f.type !== "channelPins") return;
+        this.world.channelPins = {
+          ...this.world.channelPins,
+          [channelId]: {
+            asked: true, loading: false,
+            entries: append
+              ? [...held.entries, ...f.entries.filter(entry => !held.entries.some(old => old.id === entry.id))]
+              : [...f.entries],
+            hasMore: f.hasMore ?? false,
+            nextPinnedAt: f.nextPinnedAt, nextMessageId: f.nextMessageId, revision: f.revision,
+          },
+        };
+        this.emit();
+      },
+      refused: error => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId) return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined, problem: error } };
+        this.emit();
+      },
+      lost: () => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId) return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined,
+            problem: "The relay did not answer. Try loading pinned messages again." } };
+        this.emit();
+      },
+    });
+    if (!sent) {
+      this.channelPinRequests.delete(requestId);
+      const held = this.world.channelPins[channelId];
+      if (held?.requestId === requestId) {
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined,
+            problem: "Cloud9 is reconnecting. Pinned messages will return when the relay answers." } };
+        this.emit();
+      }
+    }
+  }
+
+  pinChannelMessage(channelId: ID, messageId: ID): ID | undefined {
+    return this.sendChannelPin({ type: "pinMessage", channelId, messageId });
+  }
+
+  unpinChannelMessage(channelId: ID, messageId: ID): ID | undefined {
+    return this.sendChannelPin({ type: "unpinMessage", channelId, messageId });
+  }
+
+  private sendChannelPin(frame: Extract<ChannelPinRequestFrame, { type: "pinMessage" | "unpinMessage" }>): ID | undefined {
+    const requestId = this.nextRequestId(frame.type);
+    this.channelPinRequests.set(requestId, frame);
+    this.world.channelPinPending = [...new Set([...this.world.channelPinPending, frame.messageId])];
+    const sent = this.transmit({ ...frame, requestId }, {
+      answers: f => f.type === "channelPins" && f.channelId === frame.channelId && f.requestId === requestId,
+      answered: f => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        if (f.type !== "channelPins") return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: {
+            asked: true, loading: false, entries: [...f.entries], hasMore: f.hasMore ?? false,
+            nextPinnedAt: f.nextPinnedAt, nextMessageId: f.nextMessageId, revision: f.revision,
+          } };
+        this.emit();
+      },
+      refused: error => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: { ...held, problem: error } };
+        this.emit();
+      },
+      lost: () => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: { ...held, problem: "The relay did not answer. Try again." } };
+        this.emit();
+      },
+    });
+    if (!sent) {
+      this.channelPinRequests.delete(requestId);
+      this.finishChannelPinPending(frame.messageId);
+      const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+      this.world.channelPins = { ...this.world.channelPins,
+        [frame.channelId]: { ...held, problem: "Cloud9 is reconnecting. Try again when the relay answers." } };
+      this.emit();
+      return undefined;
+    }
+    this.emit();
+    return requestId;
+  }
+
+  private finishChannelPinPending(messageId: ID): void {
+    const stillWaiting = [...this.channelPinRequests.values()].some(frame =>
+      frame.type !== "listChannelPins" && frame.messageId === messageId);
+    if (!stillWaiting) this.world.channelPinPending = this.world.channelPinPending.filter(id => id !== messageId);
   }
 
   /* ---------------- search ---------------- */
@@ -1898,6 +2516,7 @@ export class RelayClient {
        reason this run cannot be shown ends the disclosure's wait. */
     const gone = (): void => {
       this.world.runsGone = { ...this.world.runsGone, [runId]: true };
+      this.clearRichLinkPreviewsForRef("run", runId);
       this.emit();
     };
     this.ask({ type: "runDetail", runId }, {
@@ -1905,6 +2524,78 @@ export class RelayClient {
       refused: gone,
       lost: gone,
     });
+  }
+
+  /** Ask the relay for recovery actions, then perform only a fresh-authorised action. */
+  recoverRun(runId: ID, mode: "retry" | "resume" | "restart"): void {
+    const requestId = this.nextRequestId("runRecovery");
+    const existing = this.world.runRecovery[runId];
+    // Every user-triggered action starts a new server challenge. A token that
+    // authorised an earlier request must never be inherited for new side
+    // effects; only the correlated challenge response below reuses its exact
+    // request id once.
+    const approvalEpoch = "";
+    this.world.runRecovery = {
+      ...this.world.runRecovery,
+      [runId]: existing
+        ? { ...existing, requestId, mode, authorizationToken: undefined, pending: true, problem: undefined }
+        : { decision: { actions: [], recommended: "retry" }, requestId, mode, authorizationToken: undefined, pending: true },
+    };
+    this.emit();
+    const sent = this.send({ type: "runRecovery", runId, mode, approvalEpoch, requestId });
+    if (sent === undefined) {
+      this.world.runRecovery = { ...this.world.runRecovery, [runId]: {
+        ...this.world.runRecovery[runId], authorizationToken: undefined, pending: false,
+        problem: "Cloud9 is reconnecting. Try recovery again when the relay answers.",
+      } };
+      this.emit();
+      return;
+    }
+    const timer = setTimeout(() => {
+      const held = this.world.runRecovery[runId];
+      if (!held || held.requestId !== requestId || !held.pending) return;
+      this.world.runRecovery = { ...this.world.runRecovery, [runId]: {
+        ...held, authorizationToken: undefined, pending: false, problem: "The relay did not answer. Try recovery again.",
+      } };
+      this.recoveryTimers.delete(requestId);
+      this.emit();
+    }, ANSWER_WINDOW_MS);
+    this.recoveryTimers.set(requestId, timer);
+  }
+
+  /** Select exactly two known run ids; the relay applies access projection. */
+  compareRuns(leftRunId: ID, rightRunId: ID): void {
+    if (!leftRunId || !rightRunId || leftRunId === rightRunId) return;
+    const key = `${leftRunId}:${rightRunId}`;
+    const requestId = this.nextRequestId("runCompare");
+    this.world.runComparisonProblems = { ...this.world.runComparisonProblems };
+    delete this.world.runComparisonProblems[key];
+    let sent: ID | undefined;
+    try {
+      sent = this.send({ type: "runCompare", leftRunId, rightRunId, requestId });
+    } catch {
+      sent = undefined;
+    }
+    if (sent === undefined) {
+      this.world.runComparisonProblems = { ...this.world.runComparisonProblems,
+        [key]: "Cloud9 could not send the comparison. Try again when the relay answers." };
+      this.emit();
+      return;
+    }
+    this.comparisonRequests.set(requestId, key);
+    const timer = setTimeout(() => {
+      if (!this.comparisonRequests.has(requestId)) return;
+      this.comparisonRequests.delete(requestId);
+      this.comparisonTimers.delete(requestId);
+      this.world.runComparisonProblems = { ...this.world.runComparisonProblems,
+        [key]: "The relay did not answer. Try comparing again." };
+      this.emit();
+    }, ANSWER_WINDOW_MS);
+    this.comparisonTimers.set(requestId, timer);
+  }
+
+  runComparison(leftRunId: ID, rightRunId: ID): RunComparison | undefined {
+    return this.world.runComparisons[`${leftRunId}:${rightRunId}`];
   }
 
   /**
@@ -1960,6 +2651,10 @@ export class RelayClient {
    */
   private forgetRunsOf(agentId: ID): void {
     const w = this.world;
+    // Invalidate while the records still provide the run-id correlation for
+    // an in-flight preview; deleting them first would leave a loading cache
+    // able to survive an agent deletion.
+    this.clearRichLinkPreviewsForAgent(agentId);
     const kept: Record<string, RunRecord> = {};
     for (const [id, record] of Object.entries(w.runs)) {
       if (record.agentId !== agentId) kept[id] = record;
@@ -1980,6 +2675,68 @@ export class RelayClient {
   /** Ask who is in one room. Answered with roles, join dates and who let them in. */
   askMembers(channelId: ID): void {
     this.send({ type: "channelMembers", channelId });
+  }
+
+  /**
+   * Ask the relay/provider for a summary of one thread. This is deliberately
+   * an explicit action: no mount/reconnect path calls it and no local NLP is
+   * attempted when the provider is unavailable.
+   */
+  requestThreadSummary(
+    channelId: ID, threadId: ID, sourceMessageId: ID, agentId: ID, requestId = this.nextRequestId("threadSummary"),
+  ): ID | undefined {
+    const unavailable = (error: string): void => {
+      const result: ThreadSummaryResult = {
+        requestId, channelId, threadId, sourceMessageId, agentId,
+        requesterId: this.world.me?.id ?? "unknown-requester",
+        status: "unavailable", updatedAt: Date.now(),
+        decisions: [], openQuestions: [], nextActions: [], sources: [], error,
+      };
+      this.world.threadSummaries = { ...this.world.threadSummaries, [requestId]: result };
+      const { [requestId]: pending, ...rest } = this.world.threadSummaryPending;
+      void pending;
+      this.world.threadSummaryPending = rest;
+      this.emit();
+    };
+    const requesterId = this.world.me?.id;
+    if (!requesterId) { unavailable("Sign in before asking for a thread summary."); return undefined; }
+    this.world.threadSummaries = { ...this.world.threadSummaries, [requestId]: {
+      requestId, channelId, threadId, sourceMessageId, agentId, requesterId,
+      status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+    } };
+    this.world.threadSummaryPending = { ...this.world.threadSummaryPending, [requestId]: true };
+    this.emit();
+    const sent = this.transmit({
+      type: "threadSummary", channelId, threadId, sourceMessageId, agentId, requestId,
+    }, {
+      answers: f => f.type === "threadSummary" && f.summary.requestId === requestId,
+      refused: unavailable,
+      lost: () => unavailable("Cloud9 disconnected before the summary was ready.") ,
+    });
+    if (!sent) unavailable("Cloud9 is offline. Try again when the relay is connected.");
+    return sent;
+  }
+
+  /** Retry with a fresh correlation id so a prior terminal refusal is not replayed. */
+  retryThreadSummary(requestId: ID): ID | undefined {
+    const prior = this.world.threadSummaries[requestId];
+    if (!prior || (prior.status !== "refused" && prior.status !== "unavailable")) return undefined;
+    return this.requestThreadSummary(prior.channelId, prior.threadId, prior.sourceMessageId, prior.agentId);
+  }
+
+  channelMemoryPoliciesFor(channelId: ID): ChannelMemoryPolicy[] {
+    return this.world.channelMemoryPolicies.filter(policy => policy.channelId === channelId);
+  }
+
+  askChannelMemoryPolicies(channelId: ID): void {
+    this.send({ type: "channelMemoryPolicies", channelId });
+  }
+
+  setChannelMemoryPolicy(
+    channelId: ID, agentId: ID, mode: ChannelMemoryMode, expectedRevision?: number,
+  ): void {
+    this.send({ type: "setChannelMemoryPolicy", channelId, agentId, mode,
+      ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
   }
 
   /* ---------------- what an agent remembers between conversations ----------------
@@ -2715,9 +3472,54 @@ askPolls(projectId: ID): void {
 
   /* ---------------- attaching a file ---------------- */
 
-  private uploadQueue: Array<{ channelId: ID; localId: string; frame: ClientFrame }> = [];
+  private uploadQueue: Array<{ channelId: ID; localId: string; threadId?: ID; frame: ClientFrame }> = [];
+  /** FileReader work has to be cancelled too; it can finish after a room went away. */
+  private uploadReaders = new Map<string, { channelId: ID; reader: FileReader }>();
   /** the one upload the hub is working on — see `attach` for why there is only one */
-  private uploading: { channelId: ID; localId: string } | null = null;
+  private uploading: { channelId: ID; localId: string; requestId: ID } | null = null;
+
+  /** Cancel transport/read work for one upload scope before removing its rows. */
+  private cancelUploadWork(channelId?: ID, localId?: string): void {
+    const matches = (candidateChannelId: ID, candidateLocalId: string): boolean =>
+      (channelId === undefined || candidateChannelId === channelId)
+      && (localId === undefined || candidateLocalId === localId);
+    this.uploadQueue = this.uploadQueue.filter(entry => !matches(entry.channelId, entry.localId));
+    for (const [readerLocalId, pending] of this.uploadReaders) {
+      if (!matches(pending.channelId, readerLocalId)) continue;
+      this.uploadReaders.delete(readerLocalId);
+      // The onabort handler only drops the map entry, so a browser completing
+      // the event cannot resurrect a row we are about to remove.
+      if (pending.reader.readyState === FileReader.LOADING) pending.reader.abort();
+    }
+    const current = this.uploading;
+    if (current && matches(current.channelId, current.localId)) {
+      this.removeAsked(current.requestId);
+      this.uploading = null;
+    }
+  }
+
+  /** Revoke every local preview URL before discarding upload state. */
+  private clearUploadsFor(channelId?: ID): void {
+    this.cancelUploadWork(channelId);
+    if (channelId === undefined) {
+      for (const rows of Object.values(this.world.uploads)) {
+        for (const upload of rows) if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+      }
+      this.world.uploads = {};
+      return;
+    }
+    const rows = this.world.uploads[channelId] ?? [];
+    for (const upload of rows) if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+    const { [channelId]: _gone, ...rest } = this.world.uploads;
+    void _gone;
+    this.world.uploads = rest;
+    // Uploads are globally serialized, not scoped to one room. If the removed
+    // room owned the current slot, let the next visible room take it now.
+    this.pumpUploads();
+  }
+
+  /** Reconnect/access-loss cleanup has one entry point so no preview leaks. */
+  private clearAllUploads(): void { this.clearUploadsFor(); }
 
   private setUploads(channelId: ID, next: Upload[]): void {
     this.world.uploads = { ...this.world.uploads, [channelId]: next };
@@ -2737,44 +3539,70 @@ askPolls(projectId: ID): void {
    * and a refusal would be pinned on the wrong file. A queue costs a moment on
    * a second file and buys an answer that is always about the right one.
    */
-  attach(channelId: ID, file: File): void {
+  attach(channelId: ID, file: File, threadId?: ID): void {
+    const scopeThreadId = this.uploadThreadId(threadId);
     const localId = `up_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
     const list = this.world.uploads[channelId] ?? [];
     // The same ceilings the hub holds, asked here first so a 10 MB file is
     // refused in the moment it is picked rather than after it has been read,
     // encoded and sent. `validateAttachment` is the hub's own function — there
     // is no second copy of the rule in this app.
-    const already = list.filter(u => u.state !== "failed").length;
+    const already = list.filter(u => u.state !== "failed" && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")).length;
     if (already >= ATTACHMENT_LIMITS.perMessage) {
       this.notify(`that's the most files one message can carry (${ATTACHMENT_LIMITS.perMessage})`);
+      return;
+    }
+    const duplicate = list.some(u => u.state !== "failed"
+      && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")
+      && u.name === file.name && u.size === file.size && (u.mime ?? "") === (file.type ?? ""));
+    if (duplicate) {
+      this.notify("that file is already attached to this message");
       return;
     }
     const refusal = validateAttachment(file.name, file.size);
     if (refusal) {
       this.setUploads(channelId,
-        [...list, { localId, name: file.name, size: file.size, state: "failed", error: refusal }]);
+        [...list, { localId, name: file.name, size: file.size, state: "failed", phase: "failed", error: refusal, ...(scopeThreadId ? { threadId: scopeThreadId } : {}) }]);
       this.emit();
       return;
     }
+    const previewKind = uploadPreviewKind(file.name, file.type);
     this.setUploads(channelId,
-      [...list, { localId, name: file.name, size: file.size, state: "sending" }]);
+      [...list, { localId, name: file.name, size: file.size, state: "sending", phase: "reading", progress: 0,
+        ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
+        ...(file.type ? { mime: file.type } : {}),
+        ...(previewKind ? { previewUrl: URL.createObjectURL(file) } : {}) }]);
     this.emit();
 
     const reader = new FileReader();
-    reader.onerror = () => {
-      this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+    this.uploadReaders.set(localId, { channelId, reader });
+    reader.onprogress = event => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      this.patchUpload(channelId, localId, {
+        state: "sending", phase: "reading",
+        progress: Math.max(0, Math.min(100, Math.round(event.loaded / event.total * 100))),
+      });
       this.emit();
     };
+    reader.onerror = () => {
+      this.uploadReaders.delete(localId);
+      this.patchUpload(channelId, localId, { state: "failed", phase: "failed", progress: undefined, error: "that file could not be read" });
+      this.emit();
+    };
+    reader.onabort = () => { this.uploadReaders.delete(localId); };
     reader.onload = () => {
+      this.uploadReaders.delete(localId);
       const asUrl = String(reader.result ?? "");
       const comma = asUrl.indexOf(",");
       if (comma < 0) {
-        this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+        this.patchUpload(channelId, localId, { state: "failed", phase: "failed", progress: undefined, error: "that file could not be read" });
         this.emit();
         return;
       }
+      this.patchUpload(channelId, localId, { phase: "uploading", progress: 100 });
+      this.emit();
       this.uploadQueue.push({
-        channelId, localId,
+        channelId, localId, ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
         frame: {
           type: "uploadAttachment", channelId, name: file.name,
           dataBase64: asUrl.slice(comma + 1), mime: file.type || undefined,
@@ -2789,7 +3617,10 @@ askPolls(projectId: ID): void {
     if (this.uploading) return;
     const next = this.uploadQueue.shift();
     if (!next) return;
-    const up = { channelId: next.channelId, localId: next.localId };
+    // Assign the id before the send and capture it in every callback. The
+    // relay echoes it, so a late response for A cannot settle queued B.
+    const requestId = this.nextRequestId("uploadAttachment");
+    const up = { channelId: next.channelId, localId: next.localId, requestId };
     this.uploading = up;
     /* Only ever about THIS file. Both of these are reached from the request
        ledger, so they are called for this upload's own answer and for nothing
@@ -2797,17 +3628,26 @@ askPolls(projectId: ID): void {
     const failed = (why: string): void => {
       if (this.uploading !== up) return;
       this.uploading = null;
-      this.patchUpload(up.channelId, up.localId, { state: "failed", error: why });
+      this.patchUpload(up.channelId, up.localId, { state: "failed", phase: "failed", progress: undefined, error: why });
       this.emit();
       this.pumpUploads();
     };
-    const sent = this.ask(next.frame, {
-      answers: f => f.type === "attachment",
+    this.patchUpload(up.channelId, up.localId, { state: "sending", phase: "uploading", progress: 100 });
+    this.emit();
+    const sent = this.ask({ ...next.frame, requestId }, {
+      answers: f => f.type === "attachment"
+        && (f as { requestId?: ID }).requestId === requestId,
       answered: f => {
         if (this.uploading !== up || f.type !== "attachment") return;
         this.uploading = null;
         this.patchUpload(up.channelId, up.localId,
-          { state: "done", attachmentId: f.attachment.id });
+          { state: "done", attachmentId: f.attachment.id,
+            phase: "ready", progress: 100,
+            draftSynced: false,
+            uploadedAt: f.attachment.uploadedAt,
+            expiresAt: f.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs,
+            ...(f.attachment.mime ? { mime: f.attachment.mime } : {}) });
+        this.emit();
         this.pumpUploads();
       },
       refused: failed,
@@ -2816,18 +3656,37 @@ askPolls(projectId: ID): void {
     if (!sent) failed("there's no connection to the hub — take the file off and try again");
   }
 
-  /** Take one picked file back out before the message is sent. */
-  dropUpload(channelId: ID, localId: string): void {
-    this.uploadQueue = this.uploadQueue.filter(q => q.localId !== localId);
+  /** Replace one failed/expired/unavailable tile without leaving its stale id in the draft. */
+  replaceUpload(channelId: ID, localId: string, file: File): void {
+    const prior = (this.world.uploads[channelId] ?? []).find(u => u.localId === localId);
+    if (!prior || prior.state !== "failed") {
+      this.attach(channelId, file);
+      return;
+    }
+    if (prior.previewUrl) URL.revokeObjectURL(prior.previewUrl);
+    this.cancelUploadWork(channelId, localId);
     this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
     this.emit();
+    this.attach(channelId, file, prior.threadId);
+  }
+
+  /** Take one picked file back out before the message is sent. */
+  dropUpload(channelId: ID, localId: string): void {
+    this.cancelUploadWork(channelId, localId);
+    const prior = (this.world.uploads[channelId] ?? []).find(u => u.localId === localId);
+    if (prior?.previewUrl) URL.revokeObjectURL(prior.previewUrl);
+    this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
+    this.emit();
+    this.pumpUploads();
   }
 
   /** The ids to name in `send` — only the files that really landed. */
-  uploadIds(channelId: ID): ID[] {
-    return (this.world.uploads[channelId] ?? [])
-      .filter(u => u.state === "done" && u.attachmentId)
+  uploadIds(channelId: ID, threadId?: ID): ID[] {
+    const scopeThreadId = this.uploadThreadId(threadId);
+    const ids = (this.world.uploads[channelId] ?? [])
+      .filter(u => u.state === "done" && u.attachmentId && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? ""))
       .map(u => u.attachmentId!);
+    return ids.filter((id, index) => ids.indexOf(id) === index);
   }
 
   /**
@@ -2844,8 +3703,9 @@ askPolls(projectId: ID): void {
   }
 
   /** How many files in this conversation's tray are still on their way up. */
-  uploadsInFlight(channelId: ID): number {
-    return (this.world.uploads[channelId] ?? []).filter(u => u.state === "sending").length;
+  uploadsInFlight(channelId: ID, threadId?: ID): number {
+    const scopeThreadId = this.uploadThreadId(threadId);
+    return (this.world.uploads[channelId] ?? []).filter(u => u.state === "sending" && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")).length;
   }
 
   /**
@@ -2858,8 +3718,8 @@ askPolls(projectId: ID): void {
    * nothing. Nothing is ever discarded in silence; a message that cannot go yet
    * is refused in a sentence, and the file stays exactly where it is.
    */
-  readyToSend(channelId: ID, hasWords: boolean): { ok: boolean; ids: ID[]; why?: string } {
-    const waiting = this.uploadsInFlight(channelId);
+  readyToSend(channelId: ID, hasWords: boolean, threadId?: ID): { ok: boolean; ids: ID[]; why?: string } {
+    const waiting = this.uploadsInFlight(channelId, threadId);
     if (waiting > 0) {
       return {
         ok: false, ids: [],
@@ -2868,17 +3728,26 @@ askPolls(projectId: ID): void {
           : `those ${waiting} files are still going up — give them a moment, or take them off`,
       };
     }
-    const ids = this.uploadIds(channelId);
+    const ids = this.uploadIds(channelId, threadId);
     if (!hasWords && ids.length === 0) return { ok: false, ids: [] };
     return { ok: true, ids };
   }
 
   /** The tray is emptied once its files have gone out with a message. */
-  clearUploads(channelId: ID): void {
-    if (!this.world.uploads[channelId]) return;
-    const { [channelId]: gone, ...rest } = this.world.uploads;
-    void gone;
-    this.world.uploads = rest;
+  clearUploads(channelId: ID, attachmentIds: readonly ID[], threadId?: ID): void {
+    const gone = this.world.uploads[channelId];
+    if (!gone) return;
+    const scopeThreadId = this.uploadThreadId(threadId);
+    const sentIds = new Set(attachmentIds);
+    const keep: Upload[] = [];
+    for (const u of gone) {
+      const inScope = (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "");
+      const wasSent = !!u.attachmentId && sentIds.has(u.attachmentId);
+      if (inScope && wasSent) { if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); }
+      else keep.push(u);
+    }
+    if (keep.length) this.world.uploads = { ...this.world.uploads, [channelId]: keep };
+    else { const { [channelId]: _gone, ...rest } = this.world.uploads; void _gone; this.world.uploads = rest; }
     this.emit();
   }
 
@@ -3097,6 +3966,8 @@ askPolls(projectId: ID): void {
    */
 
   private requestSequence = 0;
+  private clientMessageSequence = 0;
+  private pendingClientMessageIds = new Map<string, ID>();
   private accessSave?: ArtifactAccessSaveState;
 
   artifactAccessSaveState(): ArtifactAccessSaveState | undefined {
@@ -3224,6 +4095,103 @@ askPolls(projectId: ID): void {
   private artifactDetailAsked = new Set<ID>();
   /** detail questions already on the wire — invalidating a cache must not duplicate them */
   private artifactDetailInFlight = new Set<ID>();
+
+  /** Ask once per message/ref set; responses contain only relay-authorized facts. */
+  askRichLinkPreviews(messageId: ID, refs: RichLinkRef[]): void {
+    if (refs.length === 0) return;
+    const refsKey = refs.map(richLinkKey).join("|");
+    const current = this.world.richLinkPreviews[messageId];
+    if (current?.loading || (current?.asked && current.refsKey === refsKey)) return;
+    const requestId = this.nextRequestId("richLinkPreviews");
+    this.world.richLinkPreviews = {
+      ...this.world.richLinkPreviews,
+      [messageId]: { asked: false, loading: true, refsKey, refs: [...refs], previews: [] },
+    };
+    this.emit();
+    const finish = (previews: RichLinkPreview[]): void => {
+      const held = this.world.richLinkPreviews[messageId];
+      if (!held || held.refsKey !== refsKey) return;
+      this.world.richLinkPreviews = {
+        ...this.world.richLinkPreviews,
+        [messageId]: { asked: true, loading: false, refsKey, refs: [...refs], previews },
+      };
+      this.emit();
+    };
+    const sent = this.ask({ type: "richLinkPreviews", messageId, refs, requestId }, {
+      answers: frame => frame.type === "richLinkPreviews" && frame.requestId === requestId,
+      answered: frame => { if (frame.type === "richLinkPreviews") finish(frame.previews); },
+      refused: () => finish([]),
+      lost: () => finish([]),
+    });
+    if (!sent) finish([]);
+  }
+
+  richLinkPreviewsFor(messageId: ID): RichLinkPreview[] {
+    return this.world.richLinkPreviews[messageId]?.previews ?? [];
+  }
+
+  /** Drop one projection when its source text or access boundary changes. */
+  clearRichLinkPreviews(messageId: ID): void {
+    if (!(messageId in this.world.richLinkPreviews)) return;
+    this.clearRichLinkPreviewsForMessage(messageId);
+    this.emit();
+  }
+
+  private clearRichLinkPreviewsWhere(
+    predicate: (preview: RichLinkPreview) => boolean,
+    refPredicate?: (ref: RichLinkRef) => boolean,
+  ): boolean {
+    const next = { ...this.world.richLinkPreviews };
+    let changed = false;
+    for (const [messageId, state] of Object.entries(next)) {
+      if (!state.previews.some(predicate) && !(refPredicate && state.refs.some(refPredicate))) continue;
+      delete next[messageId];
+      changed = true;
+    }
+    if (changed) this.world.richLinkPreviews = next;
+    return changed;
+  }
+
+  private clearRichLinkPreviewsForRef(kind: "task" | "run" | "artifact" | "decision", id: ID): void {
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ref.kind === kind && preview.ref.id === id,
+      ref => ref.kind === kind && ref.id === id,
+    );
+  }
+
+  private clearRichLinkPreviewsForProject(projectId: ID): void {
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ref.kind === "projectItem" && preview.ref.projectId === projectId,
+      ref => ref.kind === "projectItem" && ref.projectId === projectId,
+    );
+  }
+
+  private clearRichLinkPreviewsForAgent(agentId: ID): void {
+    const taskIds = new Set(this.world.tasks.filter(task => task.agentId === agentId).map(task => task.id));
+    const runIds = new Set(Object.values(this.world.runs)
+      .filter(run => run.agentId === agentId).map(run => run.id));
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ownerId === agentId,
+      ref => (ref.kind === "task" && taskIds.has(ref.id)) || (ref.kind === "run" && runIds.has(ref.id)),
+    );
+  }
+
+  private clearRichLinkPreviewsForMessage(messageId: ID): void {
+    if (!(messageId in this.world.richLinkPreviews)) return;
+    const next = { ...this.world.richLinkPreviews };
+    delete next[messageId];
+    this.world.richLinkPreviews = next;
+  }
+
+  private clearRichLinkPreviewsForChannel(channelId: ID): void {
+    const ids = new Set((this.world.messages[channelId] ?? []).map(message => message.id));
+    this.clearRichLinkPreviewsWhere(preview => preview.channelId === channelId);
+    if (ids.size === 0) return;
+    const next = { ...this.world.richLinkPreviews };
+    let changed = false;
+    for (const id of ids) if (id in next) { delete next[id]; changed = true; }
+    if (changed) this.world.richLinkPreviews = next;
+  }
 
   /**
    * Ask for one file an agent made, by id — the card behind a reference.
@@ -3634,6 +4602,33 @@ askPolls(projectId: ID): void {
     this.emit();
   }
 
+  private noteHumanTyping(signal: HumanTyping): void {
+    const known = this.world.users.find(user => user.id === signal.userId);
+    // The server sends human users only, but the client keeps this boundary too:
+    // never draw an invented name, an agent, or our own signal.
+    if (!known || known.id === this.world.me?.id || !signal.typing
+      || signal.expiresAt === undefined || signal.expiresAt <= Date.now()) {
+      this.clearHumanTyping(signal.channelId, signal.userId);
+      return;
+    }
+    this.clearHumanTyping(signal.channelId, signal.userId, false);
+    const entry: HumanTyping = {
+      channelId: signal.channelId, userId: known.id, userName: known.name,
+      typing: true, expiresAt: signal.expiresAt,
+    };
+    const list = this.world.humanTyping[signal.channelId] ?? [];
+    this.world.humanTyping = {
+      ...this.world.humanTyping,
+      [signal.channelId]: [...list.filter(item => item.userId !== known.id), entry],
+    };
+    const key = this.humanTypingKey(signal.channelId, known.id);
+    const timer = setTimeout(() => {
+      const current = this.world.humanTyping[signal.channelId]?.find(item => item.userId === known.id);
+      if (current?.expiresAt === signal.expiresAt) this.clearHumanTyping(signal.channelId, known.id);
+    }, Math.max(0, signal.expiresAt - Date.now()));
+    this.humanTypingTimers.set(key, timer);
+  }
+
   private onFrame(frame: ServerFrame): void {
     const w = this.world;
     this.seen[frame.type] = (this.seen[frame.type] ?? 0) + 1;
@@ -3658,6 +4653,13 @@ askPolls(projectId: ID): void {
     if (frame.type !== "error") this.settle(frame);
     switch (frame.type) {
       case "welcome": {
+        // The snapshot is durable state, never a continuation of a transient
+        // tool stream. Begin each admitted session with a quiet activity cache.
+        clearLiveSteps();
+        clearReceipts();
+        clearAgentResponses();
+        this.clearHumanTyping(undefined, undefined, false);
+        w.humanTyping = {};
         w.connected = true;
         w.authFailed = false;
         // The hub has let us in — and only now is the credential that got us
@@ -3667,12 +4669,15 @@ askPolls(projectId: ID): void {
         w.users = frame.state.users;
         w.agents = frame.state.agents;
         w.channels = frame.state.channels;
+        w.channelMemoryPolicies = frame.state.channelMemoryPolicies ?? [];
         w.agentStatus = frame.state.agentStatus;
         // A hub from before presence existed sends nothing here. Empty is the
         // honest landing place: every row then says "we have not looked yet"
         // rather than a green dot nobody stood behind.
         w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
+        this.reconcileHandoffs(w.tasks);
+        w.taskMutations = {};
         w.approvals = frame.state.approvals;
         w.notifications = frame.state.notifications ?? [];
         w.notificationsAsked = true;
@@ -3684,6 +4689,7 @@ askPolls(projectId: ID): void {
         // A reconnect starts a new request epoch. Do not let a stale response
         // from the old socket match run/archive/stop/retry bookkeeping.
         this.workflowRequests.clear();
+        this.channelPinRequests.clear();
         this.pulseMutationRequestId = undefined;
         this.pulseAcceptedRequestId = undefined;
         this.pulseReadRequests.clear();
@@ -3703,12 +4709,18 @@ askPolls(projectId: ID): void {
         w.savedNextMessageId = undefined;
         w.savedPending = [];
         w.savedNew = false;
+        w.channelPins = {};
+        w.channelPinPending = [];
         w.pulse = {
           asked: true, loading: false, updates: frame.state.pulse?.updates ?? [],
           unreadByProject: frame.state.pulse?.unreadByProject ?? {}, projects: frame.state.pulse?.projects ?? [],
           requestId: undefined,
         };
         w.messages = {};
+        w.richLinkPreviews = {};
+        w.messageStatuses = {};
+        for (const status of frame.state.messageStatuses ?? []) w.messageStatuses[status.messageId] = status;
+        w.drafts = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
         }
@@ -3716,6 +4728,8 @@ askPolls(projectId: ID): void {
         // belonged to the last connection
         w.pages = {};
         w.threads = {};
+        w.threadSummaries = {};
+        w.threadSummaryPending = {};
         w.unread = {};
         // Everything derived from the last connection goes with it. Blob URLs
         // are freed rather than dropped, or a reconnect would leak every
@@ -3732,6 +4746,14 @@ askPolls(projectId: ID): void {
         w.runs = {};
         w.runLists = {};
         w.runsGone = {};
+        w.runRecovery = {};
+        w.runComparisons = {};
+        w.runComparisonProblems = {};
+        for (const timer of this.recoveryTimers.values()) clearTimeout(timer);
+        this.recoveryTimers.clear();
+        for (const timer of this.comparisonTimers.values()) clearTimeout(timer);
+        this.comparisonTimers.clear();
+        this.comparisonRequests.clear();
         this.runAsked.clear();
         // Projects belonged to the last connection too, and `asked` goes back
         // to false with them: this world has not asked anything yet, so the
@@ -3842,6 +4864,23 @@ askPolls(projectId: ID): void {
         w.savedMessages = [...frame.entries];
         break;
       }
+      case "channelPins": {
+        const held = w.channelPins[frame.channelId];
+        if (frame.requestId !== undefined) {
+          if (!this.channelPinRequests.has(frame.requestId)) break;
+        } else if (held?.requestId !== undefined) {
+          // An uncorrelated mirror must not outrank a list request in flight.
+          break;
+        } else if (frame.revision !== undefined && held?.revision !== undefined && frame.revision < held.revision) {
+          break;
+        }
+        const next: ChannelPinsState = {
+          asked: true, loading: false, entries: [...frame.entries], hasMore: frame.hasMore ?? false,
+          nextPinnedAt: frame.nextPinnedAt, nextMessageId: frame.nextMessageId, revision: frame.revision,
+        };
+        w.channelPins = { ...w.channelPins, [frame.channelId]: next };
+        break;
+      }
       case "token":
         // HELD, NOT WRITTEN. The hub has minted a credential for this attempt,
         // but the attempt is not a session until `welcome` arrives — and until
@@ -3856,10 +4895,25 @@ askPolls(projectId: ID): void {
         w.joinToken = { code: frame.code, expiresInMs: frame.expiresInMs, ts: Date.now() };
         break;
       case "message": {
+        noteAgentMessage(frame.message);
         // new arrays, not in-place pushes: the UI compares references to decide
         // what to recompute, so a mutated-in-place list looks like "no change"
         const cid = frame.message.channelId;
-        w.messages = { ...w.messages, [cid]: [...(w.messages[cid] ?? []), frame.message] };
+        const currentMessages = w.messages[cid] ?? [];
+        if (!currentMessages.some(m => m.id === frame.message.id)) {
+          w.messages = { ...w.messages, [cid]: [...currentMessages, frame.message] };
+        }
+        if (frame.message.authorId === w.me?.id && frame.message.clientMessageId) {
+          for (const [key, id] of this.pendingClientMessageIds) if (id === frame.message.clientMessageId) this.pendingClientMessageIds.delete(key);
+          for (const [key, intent] of this.pendingSendIntents) {
+            if (intent.clientMessageId === frame.message.clientMessageId) this.pendingSendIntents.delete(key);
+          }
+        }
+        // The recipient proves delivery by acknowledging the authenticated
+        // frame. Engines are never recipients and are rejected by the relay.
+        if (frame.message.authorKind === "human" && frame.message.authorId !== w.me?.id && w.connected) {
+          this.send({ type: "messageReceipt", channelId: frame.message.channelId, messageId: frame.message.id, status: "delivered" });
+        }
         // A reply belongs to its thread as well as to the room. Without this
         // the open thread panel would sit there missing the very reply that was
         // just typed into it, until somebody closed and reopened it.
@@ -3869,10 +4923,67 @@ askPolls(projectId: ID): void {
         }
         break;
       }
+      case "messageStatus":
+      case "messageReceipt": {
+        w.messageStatuses = { ...w.messageStatuses, [frame.status.messageId]: frame.status };
+        break;
+      }
+      case "drafts": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        const request = frame.requestId ? this.draftRequests.get(frame.requestId) : undefined;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        const next = { ...w.drafts };
+        // A list response is an authoritative snapshot, including an empty
+        // scoped result. Remove stale local keys in that scope before applying
+        // the returned rows; otherwise reopening a room resurrects a draft the
+        // relay has already deleted on another device.
+        if (request?.type === "draftList" || request?.type === "draftReconcile") {
+          for (const key of Object.keys(next)) {
+            const [channelId, threadId] = key.split("\u0000");
+            const channelMatches = request.channelId === undefined || channelId === request.channelId;
+            const threadMatches = request.threadId === undefined || threadId === (request.threadId ?? "");
+            if (channelMatches && threadMatches) delete next[key];
+          }
+        }
+        for (const draft of frame.drafts) next[this.draftKey(draft.channelId, draft.threadId)] = draft;
+        w.drafts = next;
+        break;
+      }
+      case "draftChanged": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        w.drafts = { ...w.drafts, [this.draftKey(frame.draft.channelId, frame.draft.threadId)]: frame.draft };
+        break;
+      }
+      case "draftRemoved": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        const key = this.draftKey(frame.channelId, frame.threadId);
+        const { [key]: gone, ...rest } = w.drafts;
+        void gone;
+        w.drafts = rest;
+        break;
+      }
+      case "typing":
+        this.noteHumanTyping(frame.typing);
+        break;
       case "channel": {
         const i = w.channels.findIndex(c => c.id === frame.channel.id);
+        const previousChannel = i >= 0 ? w.channels[i] : undefined;
+        /* A member update can remove one agent while the authenticated user
+           remains in the room. Evict that agent's ephemeral rows before stale
+           signals can be rendered by any inline surface. */
+        const removedAgentIds = new Set<ID>(
+          (previousChannel?.memberIds ?? []).filter(memberId =>
+            !frame.channel.memberIds.includes(memberId)
+            && w.agents.some(agent => agent.id === memberId)),
+        );
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
         w.channels = [...w.channels];
+        if (previousChannel && (previousChannel.memberIds.length !== frame.channel.memberIds.length
+          || previousChannel.memberIds.some(id => !frame.channel.memberIds.includes(id)))) {
+          this.clearRichLinkPreviewsForChannel(frame.channel.id);
+        }
         // A room arriving for the FIRST time is a room we just joined, so the
         // browse list — which only ever shows rooms you are not in — has gone
         // stale. Only on arrival: a topic change must not reset it.
@@ -3882,10 +4993,40 @@ askPolls(projectId: ID): void {
           || frame.channel.memberIds.some(memberId =>
             w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
         if (!stillVisible) {
+          const ownAgentIds = new Set(w.agents.filter(agent => agent.ownerId === w.me?.id).map(agent => agent.id));
+          w.tasks = w.tasks.filter(task => task.channelId !== frame.channel.id
+            || task.requesterId === w.me?.id || ownAgentIds.has(task.agentId));
+          this.clearUploadsFor(frame.channel.id);
+          this.clearRichLinkPreviewsForChannel(frame.channel.id);
+          clearLiveSteps(row => row.channelId === frame.channel.id);
+          clearReceipts(row => row.channelId === frame.channel.id);
+          clearAgentResponses(row => row.channelId === frame.channel.id);
           w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channel.id
             ? { ...entry, state: "inaccessible", message: undefined }
             : entry);
+          const pins = w.channelPins[frame.channel.id];
+          if (pins) w.channelPins = { ...w.channelPins,
+            [frame.channel.id]: { ...pins, entries: pins.entries.map(entry => ({ ...entry, state: "inaccessible", message: undefined })) } };
+        } else if (removedAgentIds.size > 0) {
+          clearLiveSteps(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
+          clearReceipts(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
+          clearAgentResponses(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
         }
+        break;
+      }
+      case "channelMemoryPolicies": {
+        w.channelMemoryPolicies = [
+          ...w.channelMemoryPolicies.filter(policy => policy.channelId !== frame.channelId),
+          ...frame.policies,
+        ];
+        break;
+      }
+      case "channelMemoryPolicy": {
+        w.channelMemoryPolicies = [
+          ...w.channelMemoryPolicies.filter(policy =>
+            policy.channelId !== frame.policy.channelId || policy.agentId !== frame.policy.agentId),
+          frame.policy,
+        ];
         break;
       }
       case "agent": {
@@ -3896,9 +5037,16 @@ askPolls(projectId: ID): void {
       }
       case "agentDeleted": {
         w.agents = w.agents.filter(a => a.id !== frame.agentId);
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => policy.agentId !== frame.agentId);
         // a deleted agent's presence is not a fact about anything any more
         const { [frame.agentId]: _gone, ...rest } = w.presence;
         w.presence = rest;
+        // Agent deletion is an access loss for every in-flight preview this
+        // window could have been drawing; do not leave text visible until the
+        // stale timer happens to fire.
+        clearAgentResponses(row => row.agentId === frame.agentId);
+        clearLiveSteps(row => row.agentId === frame.agentId);
+        clearReceipts(row => row.agentId === frame.agentId);
         this.forgetRunsOf(frame.agentId);
         break;
       }
@@ -3921,6 +5069,14 @@ askPolls(projectId: ID): void {
         const i = w.tasks.findIndex(t => t.id === frame.task.id);
         if (i >= 0) w.tasks[i] = frame.task; else w.tasks.unshift(frame.task);
         w.tasks = [...w.tasks];
+        this.clearRichLinkPreviewsForRef("task", frame.task.id);
+        if (frame.requestId) {
+          const handoff = w.handoffs[frame.requestId];
+          if (handoff) w.handoffs = {
+            ...w.handoffs,
+            [frame.requestId]: { ...handoff, state: "succeeded", taskId: frame.task.id, problem: undefined },
+          };
+        }
         break;
       }
       case "approval": {
@@ -4026,8 +5182,17 @@ askPolls(projectId: ID): void {
            small store in `livesteps.ts`. */
         noteLiveSteps(frame.live);
         break;
+      case "agentResponse":
+        // Ephemeral provider text is held outside WorldState and is discarded
+        // on terminal frames by the dedicated cache. It never enters history,
+        // search or unread state.
+        noteAgentResponse(frame.stream);
+        break;
       case "messageUpdated":
         this.replaceMessage(frame.message);
+        // The source text is the correlation contract. Re-parse on the next
+        // render rather than retaining cards for refs an edit removed.
+        this.clearRichLinkPreviewsForMessage(frame.message.id);
         if (frame.message.deletedAt) {
           w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
             ? { ...entry, state: "deleted", message: undefined }
@@ -4037,10 +5202,32 @@ askPolls(projectId: ID): void {
             ? { ...entry, state: "active", message: frame.message }
             : entry);
         }
+        const pins = w.channelPins[frame.message.channelId];
+        if (pins) {
+          const replacement = frame.message.deletedAt
+            ? { state: "deleted" as const, message: undefined }
+            : { state: "active" as const, message: frame.message };
+          w.channelPins = { ...w.channelPins,
+            [frame.message.channelId]: { ...pins,
+              entries: pins.entries.map(entry => entry.messageId === frame.message.id
+                ? { ...entry, ...replacement } : entry) } };
+        }
         break;
       case "thread":
         w.threads = { ...w.threads, [frame.parentId]: frame.messages };
         break;
+      case "threadSummary": {
+        // Relay validation is repeated at the renderer boundary. A malformed
+        // or provider-forged receipt must never become durable-looking UI.
+        if (!validateThreadSummaryResult(frame.summary)) break;
+        w.threadSummaries = { ...w.threadSummaries, [frame.summary.requestId]: frame.summary };
+        if (frame.summary.status !== "pending") {
+          const { [frame.summary.requestId]: pending, ...restPending } = w.threadSummaryPending;
+          void pending;
+          w.threadSummaryPending = restPending;
+        }
+        break;
+      }
       case "read":
         // Apply unconditionally — this frame is how the other machine finds out
         w.unread = { ...w.unread, [frame.entry.channelId]: frame.entry };
@@ -4052,16 +5239,27 @@ askPolls(projectId: ID): void {
         // Removed means removed EVERYWHERE, now — not after a reload. The
         // sidebar, the @-mention list and the "Remove a person" dropdown all
         // read these two arrays, so dropping them here fixes every list at once.
+        this.clearHumanTyping(undefined, frame.userId, false);
         if (w.me && frame.userId === w.me.id) {
           // it was us: the relay has already closed the socket, so show the
           // welcome screen with a reason rather than an empty app
+          this.clearAllUploads();
           w.authFailed = true;
+          clearAgentResponses();
+          clearLiveSteps();
+          clearReceipts();
           w.lastError = { text: "you were removed from this Cloud9", ts: Date.now() };
           break;
         }
         w.users = w.users.filter(u => u.id !== frame.userId);
+        this.clearHumanTyping(undefined, frame.userId, false);
         w.channels = w.channels.filter(
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
+        const removedAgentIds = new Set(w.agents.filter(agent => agent.ownerId === frame.userId).map(agent => agent.id));
+        clearAgentResponses(row => removedAgentIds.has(row.agentId));
+        clearLiveSteps(row => removedAgentIds.has(row.agentId));
+        clearReceipts(row => removedAgentIds.has(row.agentId));
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => !removedAgentIds.has(policy.agentId));
         break;
       }
       case "forumProjects": {
@@ -4072,22 +5270,26 @@ askPolls(projectId: ID): void {
         w.forumUnavailableProjects = unavailable;
         const feeds = Object.fromEntries(Object.entries(w.forumFeeds).filter(([id]) => visible.has(id)));
         const replies = { ...w.forumReplies };
-        for (const [id, feed] of Object.entries(w.forumFeeds)) if (!visible.has(id)) for (const topic of feed.topics) delete replies[topic.id];
+        for (const [id, feed] of Object.entries(w.forumFeeds)) if (!visible.has(id)) for (const topic of feed.topics) {
+          delete replies[topic.id];
+          this.clearRichLinkPreviewsForRef("decision", topic.id);
+        }
         w.forumProjects={asked:true,projects}; w.forumFeeds=feeds; w.forumReplies=replies; break;
       }
       case "forumFeed": {
         const old=w.forumFeeds[frame.projectId]??{asked:false,loading:false,topics:[],unread:0};
         const topics = [...frame.topics].sort((a,b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+        for (const topic of topics) this.clearRichLinkPreviewsForRef("decision", topic.id);
         w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,asked:true,loading:false,topics,unread:frame.unread,selected:topics.some(t=>t.id===old.selected)?old.selected:topics[0]?.id}}; break;
       }
       case "forumTopic": {
-        const projectId=frame.topic.projectId; const old=w.forumFeeds[projectId]??{asked:false,loading:false,topics:[],unread:0}; const i=old.topics.findIndex(t=>t.id===frame.topic.id); const topics=(i<0?[frame.topic,...old.topics]:old.topics.map(t=>t.id===frame.topic.id?frame.topic:t)).sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id)); w.forumFeeds={...w.forumFeeds,[projectId]:{...old,topics,selected:frame.topic.id}}; w.forumReplies={...w.forumReplies,[frame.topic.id]:frame.replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))}; break;
+        const projectId=frame.topic.projectId; const old=w.forumFeeds[projectId]??{asked:false,loading:false,topics:[],unread:0}; const i=old.topics.findIndex(t=>t.id===frame.topic.id); const topics=(i<0?[frame.topic,...old.topics]:old.topics.map(t=>t.id===frame.topic.id?frame.topic:t)).sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id)); this.clearRichLinkPreviewsForRef("decision", frame.topic.id); w.forumFeeds={...w.forumFeeds,[projectId]:{...old,topics,selected:frame.topic.id}}; w.forumReplies={...w.forumReplies,[frame.topic.id]:frame.replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))}; break;
       }
       case "forumChanged": {
-        const old=w.forumFeeds[frame.projectId]??{asked:true,loading:false,topics:[],unread:0}; let topics=old.topics; if(frame.topic){const i=topics.findIndex(t=>t.id===frame.topic!.id);topics=i<0?[frame.topic,...topics]:topics.map(t=>t.id===frame.topic!.id?frame.topic!:t);topics=[...topics].sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id));} if(frame.reply){const list=w.forumReplies[frame.reply.topicId]??[]; const i=list.findIndex(r=>r.id===frame.reply!.id); const replies=i<0?[...list,frame.reply]:list.map(r=>r.id===frame.reply!.id?frame.reply!:r); w.forumReplies={...w.forumReplies,[frame.reply.topicId]:replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))};} w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,topics}}; break;
+        const old=w.forumFeeds[frame.projectId]??{asked:true,loading:false,topics:[],unread:0}; let topics=old.topics; if(frame.topic){const i=topics.findIndex(t=>t.id===frame.topic!.id);topics=i<0?[frame.topic,...topics]:topics.map(t=>t.id===frame.topic!.id?frame.topic!:t);topics=[...topics].sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id));this.clearRichLinkPreviewsForRef("decision", frame.topic.id);} if(frame.reply){const list=w.forumReplies[frame.reply.topicId]??[]; const i=list.findIndex(r=>r.id===frame.reply!.id); const replies=i<0?[...list,frame.reply]:list.map(r=>r.id===frame.reply!.id?frame.reply!:r); w.forumReplies={...w.forumReplies,[frame.reply.topicId]:replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))};} w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,topics}}; break;
       }
       case "forumRead": { const old=w.forumFeeds[frame.entry.projectId]; if(old)w.forumFeeds={...w.forumFeeds,[frame.entry.projectId]:{...old,unread:frame.entry.unread}}; break; }
-      case "forumUnavailable": { const old=w.forumFeeds[frame.projectId]; const ids=old?.topics.map(t=>t.id)??[]; const {[frame.projectId]:gone,...rest}=w.forumFeeds; void gone; const replies={...w.forumReplies}; ids.forEach(id=>delete replies[id]); w.forumFeeds=rest; w.forumReplies=replies; w.forumProjects={...w.forumProjects,projects:w.forumProjects.projects.filter(p=>p.id!==frame.projectId)}; break; }
+      case "forumUnavailable": { const old=w.forumFeeds[frame.projectId]; const ids=old?.topics.map(t=>t.id)??[]; const {[frame.projectId]:gone,...rest}=w.forumFeeds; void gone; const replies={...w.forumReplies}; ids.forEach(id=>{delete replies[id];this.clearRichLinkPreviewsForRef("decision", id);}); w.forumFeeds=rest; w.forumReplies=replies; w.forumProjects={...w.forumProjects,projects:w.forumProjects.projects.filter(p=>p.id!==frame.projectId)}; break; }
       case "forumMembers": {
         w.forumMembersByProject = { ...w.forumMembersByProject, [frame.projectId]: frame.userIds };
         break;
@@ -4112,10 +5314,33 @@ askPolls(projectId: ID): void {
             w.savedRequestId = undefined;
           }
         }
+        if (frame.requestId !== undefined && this.draftRequests.has(frame.requestId)) {
+          const draftFrame = this.draftRequests.get(frame.requestId)!;
+          this.draftRequests.delete(frame.requestId);
+          if (draftFrame.type === "draftUpdate" || draftFrame.type === "draftReclaim") {
+            w.lastError = { text: `Draft kept: ${frame.error}`, ts: Date.now() };
+          }
+        }
         w.lastError = { text: frame.error, ts: Date.now() };
         if (frame.requestId !== undefined && frame.requestId === w.notificationsRequestId) {
           w.notificationsLoading = false;
           w.notificationsProblem = frame.error;
+        }
+        if (frame.requestId !== undefined) {
+          const recovery = Object.entries(w.runRecovery).find(([, held]) => held.requestId === frame.requestId);
+          if (recovery) {
+            const [runId, held] = recovery;
+            clearTimeout(this.recoveryTimers.get(frame.requestId));
+            this.recoveryTimers.delete(frame.requestId);
+            w.runRecovery = { ...w.runRecovery, [runId]: { ...held, authorizationToken: undefined, pending: false, problem: frame.error } };
+          }
+        }
+        if (frame.requestId !== undefined && this.comparisonRequests.has(frame.requestId)) {
+          const key = this.comparisonRequests.get(frame.requestId)!;
+          clearTimeout(this.comparisonTimers.get(frame.requestId));
+          this.comparisonTimers.delete(frame.requestId);
+          this.comparisonRequests.delete(frame.requestId);
+          w.runComparisonProblems = { ...w.runComparisonProblems, [key]: frame.error };
         }
         if (frame.requestId !== undefined && w.hooks.pending?.[frame.requestId]) {
           const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
@@ -4151,8 +5376,10 @@ askPolls(projectId: ID): void {
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
+      case "threadSummaryRequest": // relay → engine only
       case "memoryListRequested": // relay → engine host only
       case "forgetMemoryRequested": // relay → engine host only
+      case "runRecoveryRequested": // relay → engine host only
       case "handoffReceived":     // relay → the receiving agent's engine only
         break;
       case "memory":
@@ -4171,6 +5398,7 @@ askPolls(projectId: ID): void {
         // so a run from a conversation this screen never opened still lands
         // somewhere findable rather than being dropped for not being expected.
         w.runs = { ...w.runs, [frame.record.id]: frame.record };
+        this.clearRichLinkPreviewsForRef("run", frame.record.id);
         break;
       // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) =====
       case "spending":
@@ -4185,6 +5413,68 @@ askPolls(projectId: ID): void {
         if (key) {
           w.runLists = { ...w.runLists, [key]: { asked: true, loading: false, entries: frame.runs } };
         }
+        for (const record of frame.runs) this.clearRichLinkPreviewsForRef("run", record.id);
+        break;
+      }
+      case "runRecovery": {
+        const held = w.runRecovery[frame.runId];
+        if (!held || !frame.requestId || held.requestId === frame.requestId) {
+          if (frame.requestId) clearTimeout(this.recoveryTimers.get(frame.requestId));
+          if (frame.requestId) this.recoveryTimers.delete(frame.requestId);
+          const challenge = frame.decision.authorizationToken && held?.pending && held.mode
+            && held.requestId === frame.requestId && !held.authorizationToken;
+          if (challenge) {
+            w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+              ...held, decision: frame.decision,
+              authorizationToken: frame.decision.authorizationToken, pending: true,
+            } };
+            const resent = this.send({ type: "runRecovery", runId: frame.runId, mode: held.mode!,
+              approvalEpoch: frame.decision.authorizationToken!, requestId: frame.requestId });
+            if (resent === undefined) {
+              w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+                ...held, decision: frame.decision, pending: false,
+                authorizationToken: undefined,
+                problem: "Cloud9 is reconnecting. Try recovery again when the relay answers.",
+              } };
+              this.emit();
+              break;
+            }
+            const requestId = frame.requestId;
+            if (!requestId) break;
+            const timer = setTimeout(() => {
+              const current = this.world.runRecovery[frame.runId];
+              if (!current || current.requestId !== requestId || !current.pending) return;
+              this.world.runRecovery = { ...this.world.runRecovery, [frame.runId]: {
+                ...current, authorizationToken: undefined, pending: false, problem: "The relay did not answer. Try recovery again.",
+              } };
+              this.recoveryTimers.delete(requestId);
+              this.emit();
+            }, ANSWER_WINDOW_MS);
+            this.recoveryTimers.set(requestId, timer);
+          } else {
+            w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+              ...held, decision: frame.decision, requestId: frame.requestId,
+              pending: frame.pending ?? false,
+              problem: frame.problem,
+              authorizationToken: frame.decision.authorizationToken,
+            } };
+          }
+        }
+        break;
+      }
+      case "runComparison": {
+        const left = frame.comparison.left.runId;
+        const right = frame.comparison.right.runId;
+        const key = `${left}:${right}`;
+        w.runComparisons = { ...w.runComparisons, [key]: frame.comparison };
+        if (frame.requestId && this.comparisonRequests.has(frame.requestId)) {
+          clearTimeout(this.comparisonTimers.get(frame.requestId));
+          this.comparisonTimers.delete(frame.requestId);
+          this.comparisonRequests.delete(frame.requestId);
+        }
+        const { [key]: comparisonProblem, ...comparisonProblems } = w.runComparisonProblems;
+        void comparisonProblem;
+        w.runComparisonProblems = comparisonProblems;
         break;
       }
       // Both of these are the answer to one particular question and are applied
@@ -4209,6 +5499,7 @@ askPolls(projectId: ID): void {
             /* Roles are part of file access: manager inclusion and relation
                visibility can change while memberIds stays identical. */
             this.invalidateArtifactRelations();
+            this.clearRichLinkPreviewsForChannel(frame.channelId);
           }
           w.members = { ...w.members, [frame.channelId]: frame.members };
         }
@@ -4225,9 +5516,27 @@ askPolls(projectId: ID): void {
         // cached for it goes with it, or the app would keep drawing a
         // conversation the relay will no longer answer about.
         w.channels = w.channels.filter(c => c.id !== frame.channelId);
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => policy.channelId !== frame.channelId);
+        const messageIds = new Set((w.messages[frame.channelId] ?? []).map(message => message.id));
+        w.richLinkPreviews = Object.fromEntries(
+          Object.entries(w.richLinkPreviews).filter(([id]) => !messageIds.has(id)),
+        );
         const { [frame.channelId]: goneMessages, ...restMessages } = w.messages;
         void goneMessages;
         w.messages = restMessages;
+        w.threads = Object.fromEntries(Object.entries(w.threads)
+          .filter(([rootId]) => !goneMessages?.some(message => message.id === rootId)));
+        const summaryIds = new Set(Object.entries(w.threadSummaries)
+          .filter(([, summary]) => summary.channelId === frame.channelId)
+          .map(([requestId]) => requestId));
+        w.threadSummaries = Object.fromEntries(Object.entries(w.threadSummaries)
+          .filter(([requestId]) => !summaryIds.has(requestId)));
+        w.threadSummaryPending = Object.fromEntries(Object.entries(w.threadSummaryPending)
+          .filter(([requestId]) => !summaryIds.has(requestId)));
+        this.clearHumanTyping(frame.channelId, undefined, false);
+        clearAgentResponses(row => row.channelId === frame.channelId);
+        clearLiveSteps(row => row.channelId === frame.channelId);
+        clearReceipts(row => row.channelId === frame.channelId);
         const { [frame.channelId]: gonePage, ...restPages } = w.pages;
         void gonePage;
         w.pages = restPages;
@@ -4247,9 +5556,7 @@ askPolls(projectId: ID): void {
         const { [frame.channelId]: goneMembers, ...restMembers } = w.members;
         void goneMembers;
         w.members = restMembers;
-        const { [frame.channelId]: goneUploads, ...restUploads } = w.uploads;
-        void goneUploads;
-        w.uploads = restUploads;
+        this.clearUploadsFor(frame.channelId);
         /* The room's files go with the room. The hub will refuse to ticket them
            now — permission is checked against membership at the moment of the
            click — so a list left on screen would be a list of dead buttons. */
@@ -4268,6 +5575,16 @@ askPolls(projectId: ID): void {
         w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channelId
           ? { ...entry, state: "inaccessible", message: undefined }
           : entry);
+        const droppedPinMessageIds = new Set<ID>();
+        for (const [requestId, pending] of this.channelPinRequests) {
+          if (pending.channelId !== frame.channelId) continue;
+          if (pending.type !== "listChannelPins") droppedPinMessageIds.add(pending.messageId);
+          this.channelPinRequests.delete(requestId);
+        }
+        w.channelPinPending = w.channelPinPending.filter(id => !droppedPinMessageIds.has(id));
+        const { [frame.channelId]: gonePins, ...restPins } = w.channelPins;
+        void gonePins;
+        w.channelPins = restPins;
 
         // Projects linked to the room derive access from its membership. The
         // relay sends a revocation too, but purge by channel here so a window
@@ -4318,6 +5635,7 @@ askPolls(projectId: ID): void {
         // arriving for a question nobody is asking any more goes nowhere.
         break;
       case "projectForgotten": {
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projects = {
           ...w.projects,
           list: w.projects.list.filter(p => p.id !== frame.projectId),
@@ -4351,6 +5669,7 @@ askPolls(projectId: ID): void {
            in answer to `askProjectItems`. Applied unconditionally for the same
            reason `read` is: this frame is how a window finds out that GitHub
            moved underneath it. */
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projectItems = {
           ...w.projectItems,
           [frame.projectId]: { asked: true, items: frame.items },
@@ -4438,6 +5757,7 @@ askPolls(projectId: ID): void {
         w.canvases = { ...w.canvases, history: frame.revisions, historyRequestId: undefined, historyLoading: false, historyProblem: undefined };
         break;
       case "projectAccessRevoked": {
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projects = { ...w.projects, list: w.projects.list.filter(p => p.id !== frame.projectId) };
         const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
         void goneItems;
@@ -4714,6 +6034,11 @@ askPolls(projectId: ID): void {
         // Deliberately the same screen state as an invented id: no probing.
         // onFrame emits once after the switch; the helper only mutates here.
         this.forgetArtifact(frame.artifactId, false);
+        this.clearRichLinkPreviewsForRef("artifact", frame.artifactId);
+        break;
+      case "richLinkPreviews":
+        // The correlated ask callback installs this projection before the
+        // switch. Unsolicited/late frames have no cache entry and are ignored.
         break;
       case "artifactWorkspace":
         // Applied only by the bounded page request that asked for it.

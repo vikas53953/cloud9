@@ -30,7 +30,7 @@ async function stand(t: TestContext, name: string) {
   return { relay, owner, engine, open, channelId: welcome.state.channels[0].id };
 }
 
-async function makeAgent(client: TestClient, name: string, approvals = false) {
+async function makeAgent(client: TestClient, name: string, channelId: string, approvals = false) {
   client.send({
     type: "createAgent",
     agent: {
@@ -42,6 +42,10 @@ async function makeAgent(client: TestClient, name: string, approvals = false) {
   });
   const frame = await client.wait<Extract<ServerFrame, { type: "agent" }>>(
     f => f.type === "agent" && f.agent.name === name,
+  );
+  client.send({ type: "addMembers", channelId, memberIds: [frame.agent.id] });
+  await client.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channelId && f.channel.memberIds.includes(frame.agent.id),
   );
   return frame.agent;
 }
@@ -199,8 +203,8 @@ test("run history orders by transition time, with id as a deterministic tie-brea
 
 test("workflow run executes ordered steps through the existing task path", async t => {
   const { owner, engine, channelId, relay } = await stand(t, "workflow-serial.db");
-  const first = await makeAgent(owner, "Scout");
-  const second = await makeAgent(owner, "Scribe");
+  const first = await makeAgent(owner, "Scout", channelId);
+  const second = await makeAgent(owner, "Scribe", channelId);
   const workflow = await saveWorkflow(owner, channelId, [first.id, second.id]);
 
   const created = await run(owner, workflow);
@@ -237,8 +241,8 @@ test("workflow run executes ordered steps through the existing task path", async
 
 test("replayed terminal task updates are idempotent and cannot regress a run", async t => {
   const { owner, engine, channelId, relay } = await stand(t, "workflow-replay.db");
-  const first = await makeAgent(owner, "Scout");
-  const second = await makeAgent(owner, "Scribe");
+  const first = await makeAgent(owner, "Scout", channelId);
+  const second = await makeAgent(owner, "Scribe", channelId);
   const workflow = await saveWorkflow(owner, channelId, [first.id, second.id], "Replay brief");
   const created = await run(owner, workflow);
   const taskOne = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -263,7 +267,7 @@ test("replayed terminal task updates are idempotent and cannot regress a run", a
 
 test("workflow uses the existing approval gate and waits without claiming active work", async t => {
   const { owner, engine, channelId, relay } = await stand(t, "workflow-approval.db");
-  const agent = await makeAgent(owner, "Careful", true);
+  const agent = await makeAgent(owner, "Careful", channelId, true);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Approval brief");
   const created = await run(owner, workflow);
   const waiting = await owner.wait<Extract<ServerFrame, { type: "workflowRun" }>>(
@@ -288,7 +292,13 @@ test("workflow uses the existing approval gate and waits without claiming active
 
   owner.frames.length = 0;
   engine.frames.length = 0;
-  owner.send({ type: "decideApproval", approvalId: task.task.approvalId!, decision: "approved" });
+  const taskApproval = relay.store.approval(task.task.approvalId!)!;
+  owner.send({
+    type: "decideApproval", approvalId: task.task.approvalId!, decision: "approved",
+    expectedRevision: taskApproval.revision ?? 0,
+    approvalEpoch: taskApproval.approvalEpoch,
+    requestId: "workflow-approve-task",
+  });
   await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "queued");
   const released = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
     f => f.type === "task" && f.task.id === task.task.id && f.task.status === "not_started",
@@ -300,7 +310,7 @@ test("workflow uses the existing approval gate and waits without claiming active
 
 test("a mid-run approval resumes its workflow task once and rejects stale replay", async t => {
   const { owner, engine, channelId, relay } = await stand(t, "workflow-midrun-approval.db");
-  const agent = await makeAgent(owner, "Builder");
+  const agent = await makeAgent(owner, "Builder", channelId);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Mid-run approval");
   const created = await run(owner, workflow);
   const task = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -321,7 +331,7 @@ test("a mid-run approval resumes its workflow task once and rejects stale replay
     f => f.type === "approvalAsked" && f.askId === "workflow-midrun-ask",
   );
   assert.equal(relay.store.task(task.task.id)?.approvalId, receipt.approvalId);
-  await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
+  const approval = await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.id === receipt.approvalId && f.approval.taskId === task.task.id,
   );
   // A working replay while the exact card is still pending cannot release the
@@ -331,7 +341,12 @@ test("a mid-run approval resumes its workflow task once and rejects stale replay
   assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
   assert.equal(relay.store.task(task.task.id)?.status, "blocked");
 
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: approval.approval.revision ?? 0,
+    approvalEpoch: approval.approval.approvalEpoch,
+    requestId: "workflow-approve-midrun",
+  });
   await engine.wait<Extract<ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.id === receipt.approvalId && f.approval.status === "approved",
   );
@@ -352,7 +367,7 @@ test("a mid-run approval resumes its workflow task once and rejects stale replay
 
 test("failure stops at the failed step and retry creates a new attempt", async t => {
   const { owner, engine, channelId } = await stand(t, "workflow-retry.db");
-  const agent = await makeAgent(owner, "Scout");
+  const agent = await makeAgent(owner, "Scout", channelId);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Retry brief");
   const created = await run(owner, workflow);
   const task = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -379,7 +394,7 @@ test("failure stops at the failed step and retry creates a new attempt", async t
 
 test("stopping a waiting workflow marks the step stopped and retires its approval", async t => {
   const { owner, channelId } = await stand(t, "workflow-stop.db");
-  const agent = await makeAgent(owner, "Careful", true);
+  const agent = await makeAgent(owner, "Careful", channelId, true);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Stop brief");
   const created = await run(owner, workflow);
   const task = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -400,7 +415,7 @@ function relayApproval(owner: TestClient, approvalId?: string): string | undefin
 
 test("owner-only workflow gates reject a friend and missing agents stay explicit", async t => {
   const { owner, open, channelId, relay } = await stand(t, "workflow-permissions.db");
-  const agent = await makeAgent(owner, "Scout");
+  const agent = await makeAgent(owner, "Scout", channelId);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Owner brief");
   owner.send({ type: "archiveWorkflow", workflowId: workflow.id, archived: true });
   const archived = await owner.wait<Extract<ServerFrame, { type: "workflow" }>>(
@@ -436,7 +451,7 @@ test("owner-only workflow gates reject a friend and missing agents stay explicit
 
 test("raw workflow update patches cannot rewrite identity or archive state", async t => {
   const { owner, channelId, relay } = await stand(t, "workflow-raw-patch.db");
-  const agent = await makeAgent(owner, "Patch scout");
+  const agent = await makeAgent(owner, "Patch scout", channelId);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Patch-safe workflow");
   const requestId = "raw-workflow-patch";
   owner.send({
@@ -472,7 +487,7 @@ test("workflow mutations correlate only on the origin window and mirror to the o
   const { owner, open, channelId } = await stand(t, "workflow-two-windows.db");
   const mirror = open("tok-owner");
   await mirror.wait(frame => frame.type === "welcome");
-  const agent = await makeAgent(owner, "Two-window scout");
+  const agent = await makeAgent(owner, "Two-window scout", channelId);
 
   const createRequest = "two-window-create";
   owner.send({
@@ -518,11 +533,11 @@ test("workflow mutations correlate only on the origin window and mirror to the o
 
 test("workflow tasks stay out of an unrelated friend's initial world and live feed", async t => {
   const { owner, engine, open } = await stand(t, "workflow-private-task.db");
-  const agent = await makeAgent(owner, "Scout");
   owner.send({ type: "createChannel", name: "private-runbook", memberIds: [], kind: "channel" });
   const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
     frame => frame.type === "channel" && frame.channel.name === "private-runbook",
   );
+  const agent = await makeAgent(owner, "Scout", channel.channel.id);
   const workflow = await saveWorkflow(owner, channel.channel.id, [agent.id], "Private brief");
   owner.send({ type: "createInvite" });
   const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(frame => frame.type === "invite");
@@ -538,12 +553,12 @@ test("workflow tasks stay out of an unrelated friend's initial world and live fe
 });
 
 test("workflow approvals stay scoped to the owner and run channel", async t => {
-  const { owner, engine, open, channelId } = await stand(t, "workflow-private-approval.db");
-  const agent = await makeAgent(owner, "Careful", true);
+  const { owner, engine, open } = await stand(t, "workflow-private-approval.db");
   owner.send({ type: "createChannel", name: "private-approval", memberIds: [], kind: "channel" });
   const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
     frame => frame.type === "channel" && frame.channel.name === "private-approval",
   );
+  const agent = await makeAgent(owner, "Careful", channel.channel.id, true);
   const workflow = await saveWorkflow(owner, channel.channel.id, [agent.id], "Private approval");
   owner.send({ type: "createInvite" });
   const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(frame => frame.type === "invite");
@@ -574,7 +589,7 @@ async function runWorkflowForTest(owner: TestClient, workflow: Workflow): Promis
 
 test("deleting an agent stops its active workflow instead of leaving it queued", async t => {
   const { owner, engine, channelId, relay } = await stand(t, "workflow-agent-delete.db");
-  const agent = await makeAgent(owner, "Disposable");
+  const agent = await makeAgent(owner, "Disposable", channelId);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Delete race");
   const created = await run(owner, workflow);
   const task = await engine.wait<Extract<ServerFrame, { type: "task" }>>(

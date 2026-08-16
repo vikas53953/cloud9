@@ -24,6 +24,7 @@ const path = require("node:path");
 
 const REPO = path.resolve(__dirname, "..", "..", "..");
 const ENGINE = path.join(REPO, "packages", "engine", "src", "engine.ts");
+const SHARED_COMMANDS = path.join(REPO, "packages", "shared", "src", "composer-commands.ts");
 const APP = path.join(REPO, "apps", "desktop", "src", "App.tsx");
 
 /**
@@ -45,6 +46,11 @@ function commandsTheEngineParses() {
     for (const word of m[1].split("|")) found.add(`!${word}`);
   }
   for (const m of src.matchAll(/\\s\+!([a-z]+)/g)) found.add(`!${m[1]}`);
+  // Cloud9-owned slash commands live in shared and are imported by the engine.
+  const shared = fs.readFileSync(SHARED_COMMANDS, "utf8");
+  for (const name of ["summarize", "plan", "review", "ship", "assign"]) {
+    if (shared.includes(`\"${name}\"`)) found.add(`/${name}`);
+  }
   return found;
 }
 
@@ -57,9 +63,9 @@ function commandsTheMenuOffers() {
   assert.notEqual(to, -1, "could not find the end of the ROOM_COMMANDS table");
   const table = src.slice(from, to);
   const found = new Set();
-  for (const m of table.matchAll(/\bcmd:\s*"(![a-z]+)"/g)) found.add(m[1]);
+  for (const m of table.matchAll(/\bcmd:\s*"([!/][a-z]+)"/g)) found.add(m[1]);
   for (const m of table.matchAll(/\baliases:\s*\[([^\]]*)\]/g)) {
-    for (const q of m[1].matchAll(/"(![a-z]+)"/g)) found.add(q[1]);
+    for (const q of m[1].matchAll(/"([!/][a-z]+)"/g)) found.add(q[1]);
   }
   return found;
 }
@@ -98,7 +104,7 @@ test("no command is offered twice, and every row explains itself", () => {
   const src = fs.readFileSync(APP, "utf8");
   const from = src.indexOf("const ROOM_COMMANDS: RoomCommand[] = [");
   const table = src.slice(from, src.indexOf("\n];", from));
-  const cmds = [...table.matchAll(/\bcmd:\s*"(![a-z]+)"/g)].map(m => m[1]);
+  const cmds = [...table.matchAll(/\bcmd:\s*"([!/][a-z]+)"/g)].map(m => m[1]);
   assert.equal(new Set(cmds).size, cmds.length, "the same command is listed twice");
   const labels = [...table.matchAll(/\blabel:\s*"/g)].length;
   const says = [...table.matchAll(/\bsay:\s*"/g)].length;

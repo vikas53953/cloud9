@@ -124,8 +124,8 @@ test("unread: a message AT the read watermark is read; one past it is not", () =
   store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run("u_raj", "Raj");
   store.createChannel({ id: "ch1", name: "general", kind: "channel", memberIds: [owner.id, "u_raj"], createdAt: 1 });
 
-  store.markRead(owner.id, "ch1", 100);
   store.saveMessage(msg({ id: "m-at", channelId: "ch1", ts: 100, authorId: "u_raj", authorName: "Raj" }));
+  store.markRead(owner.id, "ch1", 100);
   store.saveMessage(msg({ id: "m-after", channelId: "ch1", ts: 101, authorId: "u_raj", authorName: "Raj" }));
 
   const entry = store.unreadFor(owner.id, "ch1", new Set([owner.id]));

@@ -8,17 +8,24 @@ import {
   ArtifactVersion, ArtifactVersionRef, ArtifactWorkspaceEntry, Attachment, ATTACHMENT_LIMITS,
   describeArtifactVersion, effectiveArtifactAccess, findArtifactRefs, isArtifactRestricted, latestVersion,
   normaliseArtifactAccess, validateArtifactAccess, versionOf,
-  Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
+  Channel, ChannelMember, ChannelRole, ChannelPinEntry, ChannelMemoryMode, ChannelMemoryPolicy,
+  channelMemoryModeWords, channelMemoryPolicyWords, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
-  REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
+  REMOTE_ACTIONS, isGitHubWriteKind, ActivityRecord, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
-  SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
-  HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
+  SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, testFactsFromSteps, Task, User, humanDuration, humanMoney,
+  MessageStatus,
+  HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
-   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringCanvasView, CanvasBlockKind, CanvasLink,
+   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringCanvasView, CanvasBlock, CanvasBlockKind, CanvasLink, CanvasLinkKind, CANVAS_LIMITS,
   Workflow, WorkflowRun,
+  latestWorkflowRun, workflowAgentLine, workflowAgentNames, workflowApprovalWords,
+  workflowApprovalsForRun, workflowCurrentStep, workflowCurrentStepWords,
+  workflowFailureWords, workflowLatestOutput, workflowPurposeWords, workflowReadyWords,
+  workflowRoomWords, workflowRowNowWords, workflowStatusWords, workflowStepOutput,
+  workflowTriggerWords,
   validateMessageText, validateName,
   /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
      the words and the rules come from shared, so the screen and the engine
@@ -54,6 +61,7 @@ import {
      there is no copy here that could describe a setting as something milder than
      it is. `NEW_AGENT_TRUST` is the middle one; see the note beside it. */
   AgentTrust, NEW_AGENT_TRUST, TRUST_LEVELS, trustLevel, trustOf, trustWords,
+  AgentInvocationRequest, InvocationPermissionScope, invocationTargetFor,
   NEW_AGENT_USE_OWNER_SETUP,
   /* HOW HARD AN AGENT SHOULD THINK — the four words and the sentence under each
      one, from the same file the two command lines read. The screen owns no copy:
@@ -73,17 +81,46 @@ import {
      is exactly where the last three attempts went wrong. */
   BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_FLOOR, THREAD_STEP,
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
-  ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame,
+  ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
+  RichLinkPreview, findRichLinkRefs, richLinkToken,
+  activityHasDetails, activityInspectableSteps, activityKindWords,
+  activityOutcomeChips, activityRoomName, linkActivityRow,
+  taskMatchesCommandCenterFilter, type CommandCenterFilter,
+  DEFAULT_CHAT_PERSONALIZATION, channelNotificationModeFor, channelNotificationModeWords,
+  chatAvatarScale, chatAvatarSizePx,
+  normalizeChatPersonalization, reconcileChannelNotificationPrefs,
+  withChannelNotificationMode,
+  type AvatarSize, type ChannelNotificationMode, type ChatFontSize,
+  type MessageDensity, type TimestampStyle,
 } from "@cloud9/shared";
-import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
+import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World, type HandoffRequestState } from "./store.js";
 import { Markdown } from "./markdown.js";
+import { HuddlesScreen } from "./HuddlesScreen.js";
+import {
+  microphoneLevel, voiceDuration, voiceRecordingAllowed, voiceRecordingFailure,
+  voiceRecordingOwnsResources, voiceRecordingRequestStillCurrent, voiceRecordingSessionToken,
+  type VoiceRecordingStatus,
+} from "./voice-recording.js";
 // The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
 // be mistaken for a person's reaction. All of it is in that one file.
-import { AgentReceipts } from "./receipts.js";
+import { AgentReceipts, useAgentReceipts } from "./receipts.js";
 // the live-steps store is ephemeral and lives beside the receipts one, for the
 // same reasons — see its header. Only the HOOK comes from there; the steps are
 // drawn by `RunSteps` below, the same renderer the stored record uses.
-import { useLiveSteps, useLiveWorkByAgent } from "./livesteps.js";
+import { useLiveSteps, useLiveWorkByAgent, type LiveWork } from "./livesteps.js";
+import { useResponsePreviews } from "./responsestream.js";
+import {
+  taskForSourceMessage, turnLifecycleSentence, turnLifecycleState, turnLifecycleStoppable,
+  type TurnLifecycleState,
+} from "./turnlifecycle.js";
+import { composerIntent } from "./composerintent.js";
+import {
+  recentEmojisFor, rememberRecentEmoji, subscribeRecentEmojis,
+} from "./recentemoji.js";
+import {
+  chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, shouldRestoreDurableChatDraft,
+  type ChatDraftScope,
+} from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
@@ -137,8 +174,8 @@ import {
    Imported by path for the same reason the two lines above are: these are the
    halves of shared/engine the browser is allowed to see. */
 import {
-  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, isRoomMuted, notifyTarget,
-  threadReplyEvent, withRoomMuted,
+  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, notifyTarget, withRoomMuted,
+  threadReplyEvent,
   type Cloud9Notification, type DeliveryChoice, type NotifyEvent, type NotifyTarget,
 } from "@cloud9/shared/dist/notify.js";
 import {
@@ -469,6 +506,9 @@ const initials = (name: string): string =>
 const clock = (ts: number): string =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+const exactTimestamp = (ts: number): string =>
+  new Date(ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
 /**
  * How often the Activity trail asks the hub for anything new.
  *
@@ -547,6 +587,22 @@ const fileSize = (bytes: number): string => {
 const fileKind = (name: string): string => {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 4) : "FILE";
+};
+
+/** State copy for the attachment tray. Relay-projected failures keep their
+ * exact sentence; local failures get a clear next action rather than a blank
+ * metadata line. */
+const uploadStatus = (u: { state: "sending" | "done" | "failed"; phase?: "reading" | "uploading" | "ready" | "failed"; progress?: number; draftState?: string; error?: string }): string => {
+  if (u.state === "sending") {
+    if (u.phase === "reading") return `Reading file${u.progress !== undefined ? ` — ${u.progress}%` : "…"}`;
+    return "Uploading…";
+  }
+  if (u.state === "done") return "Ready to send";
+  return plainError(u.error)
+    ?? (u.draftState === "expired" ? "This file expired — choose a replacement"
+      : u.draftState === "unavailable" ? "This file is unavailable — choose a replacement"
+        : u.draftState === "deleted" ? "This file is no longer available — choose a replacement"
+          : "Upload failed — choose a replacement");
 };
 
 /** "joined 3 Jun" — the date a membership row carries, said the short way. */
@@ -665,6 +721,24 @@ function useClickAwayCloses(
     window.addEventListener("pointerdown", onDown, true);
     return () => window.removeEventListener("pointerdown", onDown, true);
   }, [enabled, ref]);
+}
+
+/** Arrow keys walk a `role="menu"`. Home / End jump the ends. */
+function handleMenuKeys(e: React.KeyboardEvent<HTMLElement>): void {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+  const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+  if (items.length === 0) return;
+  e.preventDefault();
+  const at = items.indexOf(e.target as HTMLButtonElement);
+  const next = e.key === "Home" ? 0
+    : e.key === "End" ? items.length - 1
+    : e.key === "ArrowDown" ? (at + 1 + items.length) % items.length
+    : (at < 0 ? items.length - 1 : (at - 1 + items.length) % items.length);
+  items[next]?.focus();
+}
+
+function focusFirstMenuItem(root: HTMLElement | null): void {
+  root?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
 }
 
 /* ============ MAY THIS SCREEN BE LEFT WHILE IT HOLDS UNSAVED WORK? ========
@@ -1163,6 +1237,9 @@ const IconChat = (): React.JSX.Element => (
     <path d="M8.5 9.5h7M8.5 12.5h4" />
   </svg>
 );
+const IconSearch = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15.2 15.2 4.3 4.3"/></svg>
+);
 const IconHome = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="m4 10 8-6 8 6v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19Z" />
@@ -1459,6 +1536,79 @@ const PRESENCE_WORDS: Record<AgentPresence, string> = {
   ready: "Ready", working: "Working", paused: "Paused", offline: "Offline",
 };
 
+/** The older lamp is still a fact on the wire; keep its words human-friendly. */
+const STATUS_WORDS: Record<AgentStatus, string> = {
+  idle: "Idle", working: "Working", braked: "Waiting for a person",
+};
+
+/**
+ * One row in the @ picker. The picker is deliberately built from the same
+ * facts the rest of the room uses: channel membership, stored capabilities and
+ * trust, and the hub's presence/status projection. Missing presence is shown
+ * as missing, never as a cheerful availability claim.
+ */
+interface MentionCandidate {
+  id: ID;
+  name: string;
+  label: string;
+  kind: "agent" | "person";
+  capabilityLabel?: string;
+  availabilityLabel?: string;
+  availabilityTitle?: string;
+  trustLabel?: string;
+  statusLabel?: string;
+  membershipLabel: string;
+}
+
+function mentionCandidatesFor(channel: Pick<Channel, "memberIds">, world: Pick<World, "agents" | "users" | "me" | "presence" | "agentStatus">): MentionCandidate[] {
+  const memberIds = new Set(channel.memberIds);
+  const agents = world.agents.filter(agent => memberIds.has(agent.id));
+  /* An agent carries its owner's sight of the room. The relay uses this same
+     rule when it decides which rooms a person may see, so the picker cannot
+     offer an owner who is not actually represented in this conversation. */
+  const ownerIds = new Set(agents.map(agent => agent.ownerId));
+  const people = onePerPerson(world.users).filter(user =>
+    user.id !== world.me?.id && (memberIds.has(user.id) || ownerIds.has(user.id)));
+
+  const agentRows: MentionCandidate[] = agents.map(agent => {
+    const presence = world.presence[agent.id];
+    const effective = effectiveAbilities(agent);
+    const capabilityLabels = CAPABILITIES
+      .filter(capability => effective[capability.ability] === true)
+      .map(capability => capability.label);
+    const availabilityLabel = presence
+      ? `Availability: ${PRESENCE_WORDS[presence.presence]} · ${presence.reason}`
+      : "Availability: not reported";
+    return {
+      id: agent.id,
+      name: agent.name,
+      label: `${agent.emoji} ${agent.name}`,
+      kind: "agent",
+      capabilityLabel: capabilityLabels.length > 0
+        ? `Capabilities: ${capabilityLabels.join(" · ")}`
+        : "Capabilities: none enabled",
+      availabilityLabel,
+      availabilityTitle: presence ? `${availabilityLabel} · ${STATUS_WORDS[presence.status]}` : availabilityLabel,
+      trustLabel: `Trust: ${trustWords(agent)}`,
+      statusLabel: presence
+        ? `Status: ${STATUS_WORDS[presence.status]}`
+        : world.agentStatus[agent.id] !== undefined
+          ? `Status: ${STATUS_WORDS[world.agentStatus[agent.id]]}`
+          : undefined,
+      membershipLabel: "Membership: agent in this room",
+    };
+  });
+  const personRows: MentionCandidate[] = people.map(user => ({
+    id: user.id,
+    name: user.name,
+    label: user.name,
+    kind: "person",
+    membershipLabel: "Membership: person in this room",
+  }));
+  return [...agentRows, ...personRows].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.kind.localeCompare(b.kind));
+}
+
 /** What the hub said about this agent, or undefined for "nobody has said". */
 /* Takes only the part of the world it reads (`Pick<World, …>`), so a screen
    holding a selected SLICE can ask it too — see `useWorld` in store.ts. A full
@@ -1693,7 +1843,9 @@ function makeStore<T>(name: string, fallback: T) {
 
 export type ThemeName =
   | "system" | "light" | "dark" | "daylight" | "cloud9-pine" | "midnight"
-  | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin";
+  | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin" | "nord" | "dracula"
+  | "tokyo-night" | "graphite" | "porcelain" | "warm-paper" | "solarized-light"
+  | "high-contrast-dark" | "high-contrast-light";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type PaletteName = Exclude<ThemeName, "system" | "light" | "dark">;
@@ -1704,15 +1856,29 @@ const PALETTES: readonly {
   label: string;
   prev: string;
   mode: Exclude<AppearanceMode, "system">;
+  category: "Dark" | "Light" | "Accessibility";
 }[] = [
-  { value: "daylight", label: "Daylight", prev: "prev-light", mode: "light" },
-  { value: "cloud9-pine", label: "Cloud9 Pine", prev: "prev-pine", mode: "light" },
-  { value: "midnight", label: "Midnight", prev: "prev-dark", mode: "dark" },
-  { value: "aubergine", label: "Aubergine", prev: "prev-aubergine", mode: "dark" },
-  { value: "solarized-dark", label: "Solarized dark", prev: "prev-solarized", mode: "dark" },
-  { value: "rose-pine", label: "Rose Pine", prev: "prev-rose", mode: "dark" },
-  { value: "catppuccin", label: "Catppuccin", prev: "prev-catppuccin", mode: "dark" },
+  { value: "daylight", label: "Daylight", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "cloud9-pine", label: "Cloud9 Pine", prev: "prev-pine", mode: "light", category: "Light" },
+  { value: "porcelain", label: "Porcelain", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "warm-paper", label: "Warm Paper", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "solarized-light", label: "Solarized Light", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "high-contrast-light", label: "High Contrast Light", prev: "prev-light", mode: "light", category: "Accessibility" },
+  { value: "midnight", label: "Midnight", prev: "prev-dark", mode: "dark", category: "Dark" },
+  { value: "aubergine", label: "Aubergine", prev: "prev-aubergine", mode: "dark", category: "Dark" },
+  { value: "solarized-dark", label: "Solarized dark", prev: "prev-solarized", mode: "dark", category: "Dark" },
+  { value: "rose-pine", label: "Rose Pine", prev: "prev-rose", mode: "dark", category: "Dark" },
+  { value: "catppuccin", label: "Catppuccin", prev: "prev-catppuccin", mode: "dark", category: "Dark" },
+  { value: "nord", label: "Nord", prev: "prev-catppuccin", mode: "dark", category: "Dark" },
+  { value: "dracula", label: "Dracula", prev: "prev-aubergine", mode: "dark", category: "Dark" },
+  { value: "tokyo-night", label: "Tokyo Night", prev: "prev-solarized", mode: "dark", category: "Dark" },
+  { value: "graphite", label: "Graphite", prev: "prev-dark", mode: "dark", category: "Dark" },
+  { value: "high-contrast-dark", label: "High Contrast Dark", prev: "prev-dark", mode: "dark", category: "Accessibility" },
 ];
+const ACCENT_PRESETS = [
+  ["Neutral", "#50606a"], ["Blue", "#3B82F6"], ["Cyan", "#06B6D4"], ["Green", "#22A06B"], ["Orange", "#EA7A18"],
+  ["Red", "#DC3545"], ["Pink", "#D946A6"], ["Lavender", "#8B7CF6"], ["Purple", "#7C3AED"], ["Indigo", "#4F46E5"],
+] as const;
 
 function paletteMode(palette: PaletteName): Exclude<AppearanceMode, "system"> {
   return PALETTES.find(candidate => candidate.value === palette)?.mode ?? "light";
@@ -1722,13 +1888,29 @@ function defaultPalette(mode: Exclude<AppearanceMode, "system">): PaletteName {
   return mode === "dark" ? "midnight" : "cloud9-pine";
 }
 
+/** The room workspace modes Cloud9 can actually render from durable records. */
+export type WorkspaceLayout = "focus" | "chat-files" | "chat-diff" | "review" | "incident";
+const WORKSPACE_LAYOUT_OPTIONS: ReadonlyArray<{ value: WorkspaceLayout; label: string }> = [
+  { value: "focus", label: "Focus chat" },
+  { value: "chat-files", label: "Chat + Files" },
+  { value: "chat-diff", label: "Chat + Diff" },
+  { value: "review", label: "Review" },
+  { value: "incident", label: "Incident" },
+];
+const isWorkspaceLayout = (value: unknown): value is WorkspaceLayout =>
+  WORKSPACE_LAYOUT_OPTIONS.some(option => option.value === value);
+
 export interface Prefs {
   /** New installs keep these as separate durable choices. `theme` is retained
    * only as an optional migration bridge for installs written before this
    * split; it is never read by the UI after migration. */
   appearanceMode: AppearanceMode;
   palette: PaletteName;
+  favoritePalettes: PaletteName[];
+  customAccent: string;
   threadLayout: ThreadLayout;
+  /** The per-user/device room layout; invalid legacy values fail closed to Focus. */
+  workspaceLayout: WorkspaceLayout;
   theme?: ThemeName;
   defaultProvider: Provider;
   defaultModel: Record<Provider, string>;
@@ -1737,6 +1919,11 @@ export interface Prefs {
   quietFrom: string;
   quietTo: string;
   compact: boolean;
+  /** Durable, local-only chat presentation choices. */
+  chatFontSize: ChatFontSize;
+  messageDensity: MessageDensity;
+  timestampStyle: TimestampStyle;
+  avatarSize: AvatarSize;
   collapsed: Record<string, boolean>;
   /**
    * WHAT A REPLY DOES. His choice, and it changes the behaviour, not the words.
@@ -1757,6 +1944,8 @@ export interface Prefs {
    * from before this setting behaves.
    */
   mutedChannelIds: string[];
+  /** Explicit per-room notification choices; legacy mute ids remain supported. */
+  channelNotificationModes: Record<string, ChannelNotificationMode>;
   /**
    * HOW WIDE HE PULLED THE THREAD, and which way he is looking at it.
    *
@@ -1777,7 +1966,10 @@ export interface Prefs {
 const prefs = makeStore<Prefs>("cloud9.prefs", {
   appearanceMode: "system",
   palette: "cloud9-pine",
+  favoritePalettes: [],
+  customAccent: "",
   threadLayout: "split",
+  workspaceLayout: "focus",
   defaultProvider: "claude",
   defaultModel: { claude: MODEL_DEFAULT.claude, codex: MODEL_DEFAULT.codex },
   notify: false,
@@ -1785,9 +1977,14 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   quietFrom: "22:00",
   quietTo: "08:00",
   compact: false,
+  chatFontSize: DEFAULT_CHAT_PERSONALIZATION.fontSize,
+  messageDensity: DEFAULT_CHAT_PERSONALIZATION.density,
+  timestampStyle: DEFAULT_CHAT_PERSONALIZATION.timestamp,
+  avatarSize: DEFAULT_CHAT_PERSONALIZATION.avatarSize,
   collapsed: {},
   replies: "thread",
   mutedChannelIds: [],
+  channelNotificationModes: {},
   threadWidth: THREAD_DEFAULT,
 });
 
@@ -1812,11 +2009,197 @@ function migratePrefs(value: Prefs): void {
     next.threadLayout = value.threadTakeover ? "focus" : "split";
     next.threadTakeover = undefined;
   }
+  const chat = normalizeChatPersonalization({
+    fontSize: value.chatFontSize,
+    density: value.messageDensity,
+    timestamp: value.timestampStyle,
+    avatarSize: value.avatarSize,
+  });
+  if (value.chatFontSize !== chat.fontSize) next.chatFontSize = chat.fontSize;
+  if (value.messageDensity !== chat.density) next.messageDensity = chat.density;
+  if (value.timestampStyle !== chat.timestamp) next.timestampStyle = chat.timestamp;
+  if (value.avatarSize !== chat.avatarSize) next.avatarSize = chat.avatarSize;
+  /* Bound local storage without deciding which rooms are accessible; access
+     cleanup happens once the relay has supplied the current authorized roster. */
+  const retainedIds = [
+    ...Object.keys(value.channelNotificationModes ?? {}),
+    ...(Array.isArray(value.mutedChannelIds) ? value.mutedChannelIds : []),
+  ];
+  const bounded = reconcileChannelNotificationPrefs(value, retainedIds);
+  if (JSON.stringify(bounded.channelNotificationModes) !== JSON.stringify(value.channelNotificationModes ?? {})
+      || JSON.stringify(bounded.mutedChannelIds) !== JSON.stringify(value.mutedChannelIds ?? [])) {
+    next.channelNotificationModes = bounded.channelNotificationModes;
+    next.mutedChannelIds = bounded.mutedChannelIds;
+  }
+  /* Preferences are local input, not a trusted contract. A hand-edited or old
+     value must never make the chat claim a panel exists that it cannot render. */
+  if (!isWorkspaceLayout((value as unknown as { workspaceLayout?: unknown }).workspaceLayout)) {
+    next.workspaceLayout = "focus";
+  }
   if (Object.keys(next).length > 0) prefs.set(next);
 }
 migratePrefs(prefs.get());
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
+
+/* Sidebar layout is local to this signed-in account on this device. It never
+   travels through the relay, so a disconnected window can still reorder its
+   own view without pretending the server changed. Unknown/deleted channels are
+   reconciled when an authoritative channel list is available. */
+type SidebarSectionId = "channels" | "direct" | "people";
+const SIDEBAR_SECTIONS: readonly SidebarSectionId[] = ["channels", "direct", "people"];
+interface SidebarLayoutPrefs {
+  sections: SidebarSectionId[];
+  pinnedChannelIds: string[];
+  /* The hand-chosen channel order, on the SAME device-local shelf as the
+     section order above. The relay has no ordering of its own to defer to, so
+     a channel this list has never heard of keeps the position the account's
+     own channel list gave it rather than being invented a rank. */
+  channelOrder: string[];
+}
+const DEFAULT_SIDEBAR_LAYOUT: SidebarLayoutPrefs = {
+  sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [],
+};
+
+function sidebarLayoutKey(userId: string): string {
+  return `cloud9.sidebar-layout.v1.${encodeURIComponent(userId)}`;
+}
+
+interface SidebarLayoutRead {
+  layout: SidebarLayoutPrefs;
+  unavailable: boolean;
+}
+
+/** Channel ids as stored: strings only, deduplicated, and bounded. */
+function readChannelIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const id of value) {
+    if (typeof id === "string" && id.length > 0 && id.length <= 180 && !out.includes(id)) out.push(id);
+  }
+  return out.slice(0, 200);
+}
+
+function readSidebarLayout(userId: string | undefined): SidebarLayoutRead {
+  if (!userId) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: false };
+  try {
+    const raw = localStorage.getItem(sidebarLayoutKey(userId));
+    if (!raw) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: false };
+    const parsed = JSON.parse(raw) as { sections?: unknown; pinnedChannelIds?: unknown; channelOrder?: unknown };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || (parsed.sections !== undefined && !Array.isArray(parsed.sections))
+      || (parsed.pinnedChannelIds !== undefined && !Array.isArray(parsed.pinnedChannelIds))
+      || (parsed.channelOrder !== undefined && !Array.isArray(parsed.channelOrder))) {
+      throw new Error("sidebar preferences are not a usable object");
+    }
+    const sections: SidebarSectionId[] = [];
+    for (const candidate of parsed.sections ?? []) {
+      if (typeof candidate === "string"
+        && (SIDEBAR_SECTIONS as readonly string[]).includes(candidate)
+        && !sections.includes(candidate as SidebarSectionId)) {
+        sections.push(candidate as SidebarSectionId);
+      }
+    }
+    for (const section of SIDEBAR_SECTIONS) if (!sections.includes(section)) sections.push(section);
+    const pinnedChannelIds = Array.isArray(parsed.pinnedChannelIds)
+      ? parsed.pinnedChannelIds.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 180).slice(0, 200)
+      : [];
+    return { layout: { sections, pinnedChannelIds, channelOrder: readChannelIdList(parsed.channelOrder) }, unavailable: false };
+  } catch {
+    return { layout: { ...DEFAULT_SIDEBAR_LAYOUT, sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: true };
+  }
+}
+
+function useSidebarLayout(userId: string | undefined, channelIds: readonly string[], channelListLoaded: boolean): {
+  layout: SidebarLayoutPrefs;
+  moveSection: (section: SidebarSectionId, direction: -1 | 1) => void;
+  dropSection: (section: SidebarSectionId, target: SidebarSectionId, after: boolean) => void;
+  setChannelOrder: (ids: readonly string[]) => void;
+  togglePinned: (channelId: string) => void;
+  storageUnavailable: boolean;
+} {
+  const [scope, setScope] = useState(userId ?? "");
+  const [initialRead] = useState<SidebarLayoutRead>(() => readSidebarLayout(userId));
+  const [layout, setLayout] = useState<SidebarLayoutPrefs>(initialRead.layout);
+  const [storageStatus, setStorageStatus] = useState<"ok" | "readFailed" | "writeFailed">(
+    initialRead.unavailable ? "readFailed" : "ok");
+
+  useEffect(() => {
+    const nextScope = userId ?? "";
+    if (nextScope === scope) return;
+    const nextRead = readSidebarLayout(userId);
+    setScope(nextScope);
+    setLayout(nextRead.layout);
+    setStorageStatus(nextRead.unavailable ? "readFailed" : "ok");
+  }, [scope, userId]);
+
+  useEffect(() => {
+    if (!scope) return;
+    try {
+      localStorage.setItem(sidebarLayoutKey(scope), JSON.stringify(layout));
+      setStorageStatus(current => current === "writeFailed" ? "ok" : current);
+    } catch {
+      setStorageStatus("writeFailed");
+    }
+  }, [layout, scope]);
+
+  useEffect(() => {
+    /* Only a completed welcome snapshot is authoritative. A disconnected
+       window can temporarily expose the previous/empty array; keep pins until
+       the live account has actually answered with its channel list, including
+       the legitimate zero-channel case. */
+    if (!scope || !channelListLoaded) return;
+    const visible = new Set(channelIds);
+    setLayout(current => {
+      const pinnedChannelIds = current.pinnedChannelIds.filter(id => visible.has(id));
+      const channelOrder = current.channelOrder.filter(id => visible.has(id));
+      return pinnedChannelIds.length === current.pinnedChannelIds.length
+        && channelOrder.length === current.channelOrder.length
+        ? current : { ...current, pinnedChannelIds, channelOrder };
+    });
+  }, [channelIds, channelListLoaded, scope]);
+
+  const moveSection = useCallback((section: SidebarSectionId, direction: -1 | 1) => {
+    setLayout(current => {
+      const index = current.sections.indexOf(section);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.sections.length) return current;
+      const sections = [...current.sections];
+      [sections[index], sections[target]] = [sections[target]!, sections[index]!];
+      return { ...current, sections };
+    });
+  }, []);
+
+  /* The same move the arrow keys make, expressed as "put this one next to that
+     one" — which is what a dropped row means. A drop onto itself, or onto a
+     section this window does not know, changes nothing rather than guessing. */
+  const dropSection = useCallback((section: SidebarSectionId, target: SidebarSectionId, after: boolean) => {
+    setLayout(current => {
+      if (section === target) return current;
+      const rest = current.sections.filter(id => id !== section);
+      const at = rest.indexOf(target);
+      if (at < 0 || !current.sections.includes(section)) return current;
+      const sections = [...rest.slice(0, at + (after ? 1 : 0)), section, ...rest.slice(at + (after ? 1 : 0))];
+      return { ...current, sections };
+    });
+  }, []);
+
+  const setChannelOrder = useCallback((ids: readonly string[]) => {
+    setLayout(current => {
+      const channelOrder = readChannelIdList([...ids]);
+      return JSON.stringify(channelOrder) === JSON.stringify(current.channelOrder)
+        ? current : { ...current, channelOrder };
+    });
+  }, []);
+
+  const togglePinned = useCallback((channelId: string) => {
+    setLayout(current => current.pinnedChannelIds.includes(channelId)
+      ? { ...current, pinnedChannelIds: current.pinnedChannelIds.filter(id => id !== channelId) }
+      : { ...current, pinnedChannelIds: [...current.pinnedChannelIds, channelId].slice(-200) });
+  }, []);
+
+  return { layout, moveSection, dropSection, setChannelOrder, togglePinned, storageUnavailable: storageStatus !== "ok" };
+}
 
 /* Read state used to live in `localStorage` here. It does not any more: the
    relay keeps it on the ACCOUNT, so reading a room on this computer marks it
@@ -1827,7 +2210,11 @@ function resolvedAppearanceMode(mode: AppearanceMode): Exclude<AppearanceMode, "
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
+function validAccent(value: string): boolean {
+  return /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function applyTheme(mode: AppearanceMode, palette: PaletteName, customAccent = ""): void {
   const root = document.documentElement;
   root.setAttribute("data-appearance-mode", mode);
   root.setAttribute("data-palette", palette);
@@ -1835,17 +2222,38 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
      system mode resolves to the selected palette's family while the mode
      remains independently durable and visible in Settings. */
   const dark = resolvedAppearanceMode(mode) === "dark";
+  /* THE RESOLVED APPEARANCE, WRITTEN DOWN. `data-appearance-mode` can say
+     "system", and the palette name alone cannot answer "is this a light
+     screen?" — a chosen light palette under a dark OS is still a light screen.
+     Stylesheet rules that only apply to a dark screen key off this rather than
+     off the OS query, so no light palette can be repainted by the OS. */
+  root.setAttribute("data-appearance", dark ? "dark" : "light");
   const effectivePalette = paletteMode(palette) === (dark ? "dark" : "light")
     ? palette : defaultPalette(dark ? "dark" : "light");
   root.setAttribute("data-theme", effectivePalette);
+  if (validAccent(customAccent)) {
+    const hex = customAccent.slice(1);
+    const value = parseInt(hex, 16);
+    const channel = (shift: number) => { const c = ((value >> shift) & 255) / 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; };
+    const luminance = .2126 * channel(16) + .7152 * channel(8) + .0722 * channel(0);
+    const whiteContrast = 1.05 / (luminance + .05);
+    const darkContrast = (luminance + .05) / .05;
+    root.style.setProperty("--pine", customAccent);
+    root.style.setProperty("--on-pine", darkContrast >= whiteContrast ? "#08120F" : "#FFFFFF");
+    root.style.setProperty("--pine-soft", `color-mix(in srgb, ${customAccent} 18%, transparent)`);
+    const foreground = darkContrast >= whiteContrast ? "#08120F" : "#FFFFFF";
+    root.style.setProperty("--chrome-bg", customAccent); root.style.setProperty("--shell-rail", customAccent); root.style.setProperty("--rail-bg", customAccent);
+    root.style.setProperty("--rail-text", foreground); root.style.setProperty("--rail-ink", foreground); root.style.setProperty("--rail-muted", foreground);
+    root.style.setProperty("--rail-active", `color-mix(in srgb, ${foreground} 86%, ${customAccent})`); root.style.setProperty("--rail-active-ink", customAccent);
+  } else { for (const token of ["--pine", "--on-pine", "--pine-soft", "--chrome-bg", "--shell-rail", "--rail-bg", "--rail-text", "--rail-ink", "--rail-muted", "--rail-active", "--rail-active-ink"]) root.style.removeProperty(token); }
   const computed = getComputedStyle(root);
   const bridge = (window as unknown as { cloud9?: DesktopBridge }).cloud9;
   void bridge?.setTitleBarAppearance?.({
-    color: computed.getPropertyValue("--shell-canvas").trim(),
-    symbolColor: computed.getPropertyValue("--ink").trim(),
+    color: computed.getPropertyValue("--chrome-bg").trim(),
+    symbolColor: computed.getPropertyValue("--rail-text").trim(),
   });
 }
-applyTheme(prefs.get().appearanceMode, prefs.get().palette);
+applyTheme(prefs.get().appearanceMode, prefs.get().palette, prefs.get().customAccent);
 
 function isDarkNow(): boolean {
   const mode = document.documentElement.getAttribute("data-appearance-mode");
@@ -2013,14 +2421,14 @@ export function App(): React.JSX.Element {
   const p = usePrefs();
 
   useEffect(() => {
-    applyTheme(p.appearanceMode, p.palette);
+    applyTheme(p.appearanceMode, p.palette, p.customAccent);
     if (p.appearanceMode !== "system") return;
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
     if (!media) return;
-    const onChange = () => applyTheme(p.appearanceMode, p.palette);
+    const onChange = () => applyTheme(p.appearanceMode, p.palette, p.customAccent);
     media.addEventListener?.("change", onChange);
     return () => media.removeEventListener?.("change", onChange);
-  }, [p.appearanceMode, p.palette]);
+  }, [p.appearanceMode, p.palette, p.customAccent]);
 
   useEffect(() => {
     if (client.token()) client.connect(client.token());
@@ -2233,6 +2641,13 @@ function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
   const [screen, setScreen] = useState<ScreenName>("chat");
+  /* Global chrome owns only screen history. Channel/thread history remains the
+     chat surface's job, so Back never pretends it can reconstruct a message
+     cursor it did not record. */
+  const [screenPast, setScreenPast] = useState<ScreenName[]>([]);
+  const [screenFuture, setScreenFuture] = useState<ScreenName[]>([]);
+  const screenHistoryRef = useRef(screen);
+  const historyJumpRef = useRef(false);
   const [forumTaskTarget, setForumTaskTarget] = useState<ID>();
   const [forumRunTarget, setForumRunTarget] = useState<ID>();
   const [forumProjectItemTarget, setForumProjectItemTarget] = useState<{ projectId: ID; kind: "pull" | "issue"; number: number }>();
@@ -2254,6 +2669,7 @@ function Workspace(): React.JSX.Element {
    */
   const [awaitingHire, setAwaitingHire] = useState<string | null>(null);
   const [quick, setQuick] = useState(false);
+  const [launcherOpen, setLauncherOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const toolsHoldRef = useRef<HTMLDivElement>(null);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
@@ -2275,6 +2691,7 @@ function Workspace(): React.JSX.Element {
   /** a project (and optional PR/issue) Team feed / Pulse asked Projects to open */
   const [projectOpenAt, setProjectOpenAt] =
     useState<{ projectId: ID; itemKind?: ProjectItemKind; number?: number; at: number } | null>(null);
+  const [canvasProjectId, setCanvasProjectId] = useState<ID | undefined>();
   /* ...and the one owner that puts it back down again. A request like this is
      an ERRAND, not a setting: `jumpTo` and `openThreadFor` are both handed back
      the moment the screen has done as it was asked, and this is the same. Left
@@ -2288,6 +2705,81 @@ function Workspace(): React.JSX.Element {
   const active = world.channels.find(c => c.id === activeId)
     ?? (activeId === null ? world.channels.find(c => c.kind !== "dm") : world.channels[0]);
   const owner = isOwner(world.me);
+
+  /* Room rules are account-local, but their keys must not survive access
+     cleanup. Only reconcile from a connected, server-authorized snapshot so a
+     reconnect cannot accidentally erase preferences while the roster is
+     temporarily empty. */
+  useEffect(() => {
+    if (!world.connected) return;
+    const next = reconcileChannelNotificationPrefs(prefs.get(), world.channels.map(c => c.id));
+    const current = prefs.get();
+    if (JSON.stringify(next.channelNotificationModes) !== JSON.stringify(current.channelNotificationModes)
+        || JSON.stringify(next.mutedChannelIds) !== JSON.stringify(current.mutedChannelIds)) {
+      prefs.set({
+        channelNotificationModes: next.channelNotificationModes,
+        mutedChannelIds: next.mutedChannelIds,
+      });
+    }
+  }, [world.connected, world.channels]);
+
+  /* WHAT A SCREEN ASKS FOR ON THE WAY IN, IN ONE PLACE.
+   *
+   * Some screens are records and some are running totals. A running total held
+   * over from the last visit is out of date the moment anything happens, so
+   * those screens ask the hub again every time they are entered. That used to
+   * live only inside the handler on each rail button, which meant any OTHER
+   * way of arriving — Back, Forward, a link — showed the stale figure. This is
+   * the single owner of the question "what does entering this screen need?",
+   * so a new route cannot forget it. Screens that are pure records ask for
+   * nothing and are absent on purpose. */
+  const askOnEnter = useCallback((s: ScreenName) => {
+    if (s === "spending") client.askSpending();
+    else if (s === "projects") client.askProjects();
+    else if (s === "updates") client.askPublicUpdates();
+    else if (s === "social") client.askSocialProjects();
+    else if (s === "forums") client.askForumProjects();
+    else if (s === "huddles") client.askHuddles();
+    else if (s === "canvas") client.askProjects();
+    else if (s === "activity") client.send({ type: "activity", limit: 100 });
+    else if (s === "pulse") { client.askProjects(); client.askPulse(); }
+  }, []);
+
+  useEffect(() => {
+    const previous = screenHistoryRef.current;
+    if (previous === screen) return;
+    if (historyJumpRef.current) {
+      historyJumpRef.current = false;
+    } else {
+      setScreenPast(items => [...items.slice(-19), previous]);
+      setScreenFuture([]);
+    }
+    screenHistoryRef.current = screen;
+  }, [screen]);
+
+  const goBack = useCallback(() => {
+    const previous = screenPast.at(-1);
+    if (!previous) return;
+    attemptLeave(() => {
+      historyJumpRef.current = true;
+      setScreenPast(items => items.slice(0, -1));
+      setScreenFuture(items => [screen, ...items].slice(0, 20));
+      askOnEnter(previous);
+      setScreen(previous);
+    });
+  }, [screen, screenPast, askOnEnter]);
+
+  const goForward = useCallback(() => {
+    const next = screenFuture[0];
+    if (!next) return;
+    attemptLeave(() => {
+      historyJumpRef.current = true;
+      setScreenFuture(items => items.slice(1));
+      setScreenPast(items => [...items, screen].slice(-20));
+      askOnEnter(next);
+      setScreen(next);
+    });
+  }, [screen, screenFuture, askOnEnter]);
   const openInvite = useCallback(() => {
     client.send({ type: "createInvite" });
     setModal("invite");
@@ -2367,7 +2859,11 @@ function Workspace(): React.JSX.Element {
    * did before.
    */
   const leaveThen = useCallback((then: () => void) => attemptLeave(then), []);
-  const goScreen = useCallback((s: ScreenName) => attemptLeave(() => setScreen(s)), []);
+
+  const goScreen = useCallback((s: ScreenName) => attemptLeave(() => {
+    askOnEnter(s);
+    setScreen(s);
+  }), [askOnEnter]);
   const goChannel = useCallback((id: ID) => attemptLeave(() => {
     setActiveId(id);
     setScreen("chat");
@@ -2566,8 +3062,8 @@ function Workspace(): React.JSX.Element {
   const openHuddles = useCallback(() => { attemptLeave(() => { client.askHuddles(); setScreen("huddles"); }); }, []);
 
   
-  const openCanvas = useCallback(() => {
-    attemptLeave(() => { client.askProjects(); setScreen("canvas"); });
+  const openCanvas = useCallback((projectId?: ID) => {
+    attemptLeave(() => { setCanvasProjectId(projectId); client.askProjects(); setScreen("canvas"); });
   }, []);
 
   const openCanvasLink = useCallback((link: CanvasLink, projectId: ID) => {
@@ -2615,7 +3111,12 @@ function Workspace(): React.JSX.Element {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setQuick(q => !q);
+        setLauncherOpen(open => !open);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        leaveThen(() => { setScreen("chat"); setSearchOpen(true); });
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
@@ -2629,7 +3130,7 @@ function Workspace(): React.JSX.Element {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [leaveThen]);
 
   /* ---- clicking a Windows notification lands on the thing it is about ----
    *
@@ -2890,7 +3391,7 @@ function Workspace(): React.JSX.Element {
         .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
       jobs: () => client.world.tasks
         .map(t => ({
-          id: t.id, status: t.status, runId: t.runId ?? null,
+          id: t.id, title: t.title, status: t.status, runId: t.runId ?? null,
           agentId: t.agentId, channelId: t.channelId,
         })),
       /* THE HISTORY ENTRIES EXACTLY AS THE HUB SENT THEM, so a test can be
@@ -2989,7 +3490,10 @@ function Workspace(): React.JSX.Element {
   }>());
   const unreadFor = useCallback((c: Channel): Unread => {
     const entry = world.unread[c.id];
-    const seen = entry?.lastReadTs ?? 0;
+    const seen: ReadCursor = {
+      ts: entry?.lastReadTs ?? 0,
+      ...(entry?.lastReadId ? { id: entry.lastReadId } : {}),
+    };
     const msgs = world.messages[c.id] ?? NO_MESSAGES;
     const held = unreadCache.current.get(c.id);
     if (held && Object.is(held.msgs, msgs) && Object.is(held.entry, entry)
@@ -2999,7 +3503,7 @@ function Workspace(): React.JSX.Element {
     }
     const mine = world.me?.id;
     const myAgentIds = world.agents.filter(a => a.ownerId === mine).map(a => a.id);
-    const fresh = msgs.filter(m => m.ts > seen && m.authorId !== mine);
+    const fresh = msgs.filter(m => afterCursor(m, seen) && m.authorId !== mine);
     const mentionsMe = (m: Message) =>
       (m.mentions ?? []).some(id => id === mine || myAgentIds.includes(id));
     const unread = Math.max(fresh.length, entry?.unread ?? 0);
@@ -3038,30 +3542,6 @@ function Workspace(): React.JSX.Element {
     });
     return value;
   }, [world.unread, world.messages, world.me, world.agents, p.replies]);
-
-  /* Reading a conversation marks it read — on the account, so the phone finds
-     out too. Debounced, because a burst of arriving messages is one read. */
-  const newestTs = active
-    ? (world.messages[active.id] ?? []).reduce((n, m) => Math.max(n, m.ts), 0)
-    : 0;
-  useEffect(() => {
-    if (!active || screen !== "chat" || !world.connected) return;
-    const seen = world.unread[active.id]?.lastReadTs ?? 0;
-    const upTo = newestTs || Date.now();
-    if (seen >= upTo) return;
-    const t = setTimeout(() => client.markRead(active.id, upTo), 350);
-    return () => clearTimeout(t);
-  }, [active?.id, newestTs, screen, world.connected, world.unread]);
-
-  /* Coming back to the window is also "I have read this". */
-  useEffect(() => {
-    const onFocus = () => {
-      if (!active || screen !== "chat") return;
-      client.markRead(active.id);
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [active?.id, screen]);
 
   /* Opening a conversation asks the relay for its newest page, which is the
      only way to learn whether there is anything OLDER — `welcome` hands over
@@ -3181,6 +3661,24 @@ function Workspace(): React.JSX.Element {
         <span className="window-drag-canvas" />
       </div>
 
+      <header className="globalbar" aria-label="Global navigation">
+        <div className="global-nav" aria-label="Navigation history">
+          <button className="iconbtn" aria-label="Go back" title="Go back" disabled={screenPast.length === 0} onClick={goBack}>←</button>
+          <button className="iconbtn" aria-label="Go forward" title="Go forward" disabled={screenFuture.length === 0} onClick={goForward}>→</button>
+        </div>
+        <button className="global-search" type="button" onClick={() => leaveThen(() => { setScreen("chat"); setSearchOpen(true); })}
+          aria-label="Search messages, replies and files" title="Global search (Ctrl Shift F)">
+          <IconSearch /><span>Search messages, replies and files</span><kbd>Ctrl Shift F</kbd>
+        </button>
+        <div className="global-actions">
+          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K opens the command launcher. Ctrl Shift F searches messages, replies and files.")}>?</button>
+          <button className="iconbtn" aria-label="Notifications" title="Notifications" onClick={openNotifications}><IconBell />{unreadNotifications > 0 && <b>{unreadNotifications}</b>}</button>
+          <button className="global-profile" aria-label="Connection and profile" title={world.hubConn.line || "Connection and profile"} onClick={() => setModal("friends")}>
+            <span className={`rail-lamp ${world.connected ? "ok" : ""}`} /><span>{world.me?.name ?? "Profile"}</span>
+          </button>
+        </div>
+      </header>
+
       {world.harness?.demo && (
         <div className="demobanner" role="status">{DEMO_MODE_BANNER}</div>
       )}
@@ -3245,7 +3743,7 @@ function Workspace(): React.JSX.Element {
           </div>
 
           <div className="rail-utilities">
-            <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
+            <button className="rail-btn" title="Command launcher (Ctrl K)" onClick={() => setLauncherOpen(true)}>
               <IconBolt />Ctrl K
             </button>
             {railBtn("settings", "Settings", <IconGear />)}
@@ -3277,8 +3775,11 @@ function Workspace(): React.JSX.Element {
               onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
               onNewAgent={() => openEditor("new")} onBrowseMarket={() => goScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
-              onOpenHuddles={openHuddles}
-              lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
+              onOpenHuddles={openHuddles} onOpenCanvas={openCanvas}
+              lastRead={active
+                ? { ts: world.unread[active.id]?.lastReadTs ?? 0,
+                    ...(world.unread[active.id]?.lastReadId ? { id: world.unread[active.id]!.lastReadId } : {}) }
+                : { ts: 0 }}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
               onOpenTasks={() => goScreen("tasks")}
               jumpTo={jumpTo} onJumped={() => setJumpTo(null)}
@@ -3350,7 +3851,7 @@ function Workspace(): React.JSX.Element {
             })}
           />}
           {screen === "polls" && <PollsScreen />}
-          {screen === "canvas" && <CanvasScreen onOpenLink={openCanvasLink} />}
+          {screen === "canvas" && <CanvasScreen initialProjectId={canvasProjectId} onOpenLink={openCanvasLink} />}
           {screen === "updates" && <PublicUpdatesScreen />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
@@ -3384,6 +3885,30 @@ function Workspace(): React.JSX.Element {
       )}
       {/* The one question about unsaved words, for every screen in the app. */}
       <LeaveGuardDialog />
+      {launcherOpen && <CommandLauncher
+        onClose={() => setLauncherOpen(false)}
+        onGoChannel={id => { setLauncherOpen(false); goChannel(id); }}
+        onOpenSource={(channelId, messageId, threadId) => {
+          setLauncherOpen(false);
+          attemptLeave(() => {
+            setActiveId(channelId);
+            setScreen("chat");
+            setJumpTo({ id: messageId, at: Date.now() });
+            if (threadId) setOpenThreadFor({ id: threadId, at: Date.now() });
+          });
+        }}
+        onSearch={() => { setLauncherOpen(false); leaveThen(() => { setScreen("chat"); setSearchOpen(true); }); }}
+        onQuickChat={() => { setLauncherOpen(false); setQuick(true); }}
+        onOpenTasks={() => { setLauncherOpen(false); goScreen("tasks"); }}
+        onOpenActivity={() => { setLauncherOpen(false); openActivity(); }}
+        onToggleMute={channelId => {
+          const muted = p.mutedChannelIds.includes(channelId);
+          prefs.set({ mutedChannelIds: withRoomMuted(prefs.get(), channelId, !muted).mutedChannelIds });
+          client.notify(!muted ? "Channel muted" : "Channel unmuted");
+        }}
+        onMarkRead={(channelId, ts, messageId) => { client.markRead(channelId, ts, messageId); setLauncherOpen(false); }}
+        mutedChannelIds={p.mutedChannelIds}
+      />}
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
@@ -3558,7 +4083,16 @@ function NotifyToasts(): React.JSX.Element | null {
       door: () => ({ ...osDoor.current, bridge: !!desktop()?.osNotify }),
       choose: chooseDelivery,
       target: notifyTarget,
-      muted: () => [...(prefs.get().mutedChannelIds ?? [])],
+      /* Keep this compatibility read truthful after explicit room rules stop
+         writing the legacy list. Read the current authorized roster at call
+         time so stale local rules never leak through the QA surface. */
+      muted: () => {
+        const snapshot = client.getSnapshot();
+        const currentPrefs = prefs.get();
+        return snapshot.channels
+          .filter(channel => channelNotificationModeFor(currentPrefs, channel.id) !== "all")
+          .map(channel => channel.id);
+      },
       /* The thread rule itself, so a check can ask "would a bystander be told?"
          without staging four people in a room — the same shape as `choose` and
          `target` above. It is the SAME function the effect below calls; there is
@@ -3725,6 +4259,13 @@ interface Unread {
   onlyThreads: boolean;
 }
 
+/** Durable read position; id breaks ties when two messages share a timestamp. */
+interface ReadCursor { ts: number; id?: ID }
+
+function afterCursor(message: { ts: number; id: ID }, cursor: ReadCursor): boolean {
+  return message.ts > cursor.ts || (message.ts === cursor.ts && !!cursor.id && message.id > cursor.id);
+}
+
 /**
  * The unread marks on a rail row — nothing at all when there is nothing new.
  *
@@ -3785,11 +4326,13 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
  */
 function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null {
   const p = usePrefs();
-  if (!channelId || !isRoomMuted(p, channelId)) return null;
+  const mode = channelNotificationModeFor(p, channelId);
+  if (!channelId || mode === "all") return null;
+  const words = channelNotificationModeWords(mode);
   return (
     <span className="mutedmark" data-muted="yes"
-      title="Muted — only somebody mentioning you by name gets through"
-      aria-label="Muted">🔕</span>
+      title={words.markerTitle}
+      aria-label={words.markerAriaLabel}>🔕</span>
   );
 }
 
@@ -3814,15 +4357,27 @@ function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null 
  * rail wrong, and the number quietly meant something else — so here the element
  * that is actually being divided is asked how wide it is, and only the channel
  * list is subtracted, read from the very custom property that draws it.
+ *
+ * AND READ OFF THE GRID, NOT OFF THE PAGE, 2026-08-12. `--side-w` is declared
+ * on `:root`, but the two layouts that take the channel list away — collapsed
+ * Studio and the Focus workspace — turn it to 0px ON THE GRID ELEMENT, which is
+ * exactly the column the template uses. Asking the document still got 250px (or
+ * 216px on a narrow window) in both, so the thread divider believed a whole
+ * channel list was in its way when nothing was. Custom properties inherit, so
+ * asking the grid gives the same answer as the document in every layout that
+ * has not overridden it, and the right one in the two that have.
  */
-function useSpaceToShare(gridRef: React.RefObject<HTMLDivElement | null>): number {
+function useSpaceToShare(
+  gridRef: React.RefObject<HTMLDivElement | null>,
+  /** whatever changes `--side-w` without changing the grid's own width */
+  layoutKey: string,
+): number {
   const [space, setSpace] = useState(0);
   useEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
     const read = (): void => {
-      const side = parseFloat(
-        getComputedStyle(document.documentElement).getPropertyValue("--side-w")) || 0;
+      const side = parseFloat(getComputedStyle(grid).getPropertyValue("--side-w")) || 0;
       setSpace(Math.max(0, Math.round(grid.clientWidth - side)));
     };
     read();
@@ -3832,7 +4387,10 @@ function useSpaceToShare(gridRef: React.RefObject<HTMLDivElement | null>): numbe
        without changing the grid's width at all. */
     window.addEventListener("resize", read);
     return () => { watch.disconnect(); window.removeEventListener("resize", read); };
-  }, [gridRef]);
+    /* `layoutKey` is the third way the answer changes: taking the channel list
+       away turns `--side-w` to 0 on the grid while the grid stays exactly as
+       wide as it was, so neither the observer nor a resize would ever fire. */
+  }, [gridRef, layoutKey]);
   return space;
 }
 
@@ -3943,10 +4501,180 @@ function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null)
   return document.activeElement === target;
 }
 
+/**
+ * DRAG TO REORDER, THE WAY THE THREAD DIVIDER ALREADY WORKS.
+ *
+ * Pointer events, not HTML5 `draggable` — the app's one existing grab-and-move
+ * control (`ThreadDivider`) is built this way, it keeps the drop line ours to
+ * draw, and it survives the Electron window where a native drag image does not.
+ *
+ * NOTHING HAPPENS UNTIL THE HAND HAS ACTUALLY TRAVELLED. Below the threshold no
+ * pointer is captured and no default is prevented, so a plain click on a
+ * channel is an ordinary click and still opens the room. `moved` is what a row
+ * asks afterwards to know whether its click was really a drag.
+ */
+const DRAG_GRAB_PX = 5;
+
+interface DragReorderState {
+  /** The row in his hand, once the grab passed the threshold. */
+  dragId: string | null;
+  /** The row the line is drawn against, or null when there is nowhere to drop. */
+  overId: string | null;
+  /** True when the line belongs under `overId` rather than above it. */
+  after: boolean;
+}
+const NO_DRAG: DragReorderState = { dragId: null, overId: null, after: false };
+
+function useDragReorder(onDrop: (dragId: string, overId: string, after: boolean) => void): {
+  drag: DragReorderState;
+  /** True while the last grab was a real drag — a row reads it to drop its click. */
+  moved: React.MutableRefObject<boolean>;
+  grab: (list: string, id: string) => (e: React.PointerEvent<HTMLElement>) => void;
+} {
+  const [drag, setDrag] = useState<DragReorderState>(NO_DRAG);
+  const moved = useRef(false);
+  const dropRef = useRef(onDrop);
+  useEffect(() => { dropRef.current = onDrop; }, [onDrop]);
+  /* EVERYTHING A LIVE DRAG PUT ON THE PAGE, in one function this component can
+     call while unmounting. A sidebar taken away mid-drag used to leave three
+     document listeners and — worse — a dead cancel on the app's escape stack,
+     which would silently eat the next Escape anywhere in Cloud9. */
+  const release = useRef<(() => void) | null>(null);
+  useEffect(() => () => { release.current?.(); release.current = null; }, []);
+
+  const grab = useCallback((list: string, id: string) => (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const startY = e.clientY;
+    const pointerId = e.pointerId;
+    let live = false;
+    let over: { id: string; after: boolean } | null = null;
+    moved.current = false;
+
+    /* Only rows of the SAME list answer, so a channel can never be dropped into
+       the section list and a pinned row can never land among the unpinned. */
+    const hit = (x: number, y: number): { id: string; after: boolean } | null => {
+      for (const el of document.elementsFromPoint(x, y)) {
+        const row = (el as HTMLElement).closest?.(`[data-drag-list="${list}"][data-drag-item]`) as HTMLElement | null;
+        const rowId = row?.dataset.dragItem;
+        if (row && rowId) {
+          const box = row.getBoundingClientRect();
+          return { id: rowId, after: y > box.top + box.height / 2 };
+        }
+      }
+      return null;
+    };
+
+    const letGo = (): void => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.removeEventListener("pointercancel", cancel);
+      const at = escapeStack.lastIndexOf(abandon);
+      if (at >= 0) escapeStack.splice(at, 1);
+      document.body.classList.remove("dragging-row");
+      release.current = null;
+    };
+
+    const settle = (commit: boolean): void => {
+      letGo();
+      setDrag(NO_DRAG);
+      if (commit && live && over && over.id !== id) dropRef.current(id, over.id, over.after);
+    };
+
+    /* Escape puts the row back where it was — a drag he changed his mind about
+       must never leave the list rearranged behind his back. It goes on the app's
+       ONE escape stack rather than on a listener of its own: the stack owner
+       stops the press reaching anything below it, and the newest thing (this
+       drag) is what Escape should reach first anyway. */
+    const abandon = (): void => settle(false);
+
+    const move = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return;
+      if (!live) {
+        if (Math.abs(ev.clientY - startY) < DRAG_GRAB_PX) return;
+        live = true;
+        moved.current = true;
+        escapeStack.push(abandon);
+        document.body.classList.add("dragging-row");
+      }
+      ev.preventDefault();
+      const found = hit(ev.clientX, ev.clientY);
+      over = found && found.id !== id ? found : null;
+      setDrag({ dragId: id, overId: over?.id ?? null, after: over?.after ?? false });
+    };
+    const up = (ev: PointerEvent): void => { if (ev.pointerId === pointerId) settle(true); };
+    const cancel = (ev: PointerEvent): void => { if (ev.pointerId === pointerId) settle(false); };
+
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", cancel);
+    release.current = letGo;
+  }, []);
+
+  return { drag, moved, grab };
+}
+
+/** The line the list draws while a row is over this one, as data the CSS reads. */
+function dropEdge(drag: DragReorderState, id: string): Record<string, string> {
+  if (drag.overId !== id) return {};
+  return { "data-drop-edge": drag.after ? "after" : "before" };
+}
+
+/**
+ * THE GRIP ON A SECTION HEADING.
+ *
+ * It replaces the two arrow buttons that used to sit here: one control he can
+ * drag, and — because a control only a mouse can reach is not something to hand
+ * him — the same up/down move on the arrow keys once it has focus.
+ */
+function SidebarSectionOrder({
+  section, label, position, count, onMove, grab, dragging, say,
+}: {
+  section: SidebarSectionId; label: string; position: number; count: number;
+  onMove: (section: SidebarSectionId, direction: -1 | 1) => void;
+  grab: (e: React.PointerEvent<HTMLElement>) => void;
+  dragging: boolean;
+  /** What the move did, for the sidebar's one live region to speak. */
+  say: (words: string) => void;
+}): React.JSX.Element {
+  const words = `Reorder the ${label} section — drag it, or press the up and down arrow keys`;
+  return (
+    <span className="sidebar-section-order">
+      <button type="button" className={`drag-grip${dragging ? " is-dragging" : ""}`}
+        aria-label={`${words}. Position ${position + 1} of ${count}.`} title={words}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        onPointerDown={grab}
+        onKeyDown={e => {
+          if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+          e.preventDefault();
+          const up = e.key === "ArrowUp";
+          /* At the end of the list, say THAT rather than nothing — silence is
+             indistinguishable from a key that was not received. */
+          if (up ? position <= 0 : position >= count - 1) {
+            say(`${label} section is already ${up ? "first" : "last"}`);
+            return;
+          }
+          onMove(section, up ? -1 : 1);
+          say(`${label} section moved to position ${up ? position : position + 2} of ${count}`);
+        }}>⠿</button>
+    </span>
+  );
+}
+
+/**
+ * WHAT THIS FLOOR IS CALLED — written once.
+ *
+ * The header, its tooltip and its accessible label all read this, so a name
+ * the header has had to shorten can still be read in full from the tooltip
+ * and heard in full by a screen reader. They used to be three separate
+ * literals, and the tooltip said "Workspace options" — which meant a clipped
+ * name had nowhere left to be read at all.
+ */
+const WORKSPACE_NAME = "Studio floor";
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
-  onOpenHuddles,
+  onOpenHuddles, onOpenCanvas,
   lastRead, findOpen, onCloseFind,
   onOpenTasks, jumpTo, onJumped, openThreadFor, onThreadOpened,
 }: {
@@ -3956,8 +4684,8 @@ function ChatScreen({
   onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void;
   onBrowseMarket: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
-  onOpenHuddles: () => void;
-  lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
+  onOpenHuddles: () => void; onOpenCanvas: (projectId?: ID) => void;
+  lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /**
    * The message that STARTED a thread another screen wants opened — a reply
@@ -3972,20 +4700,62 @@ function ChatScreen({
      meant every message in every room, every file that landed and every search
      answer redrew the whole floor list. */
   const world = useWorld(w => ({
+    connected: w.connected,
+    authFailed: w.authFailed,
     channels: w.channels,
     presence: w.presence,
     tasks: w.tasks,
+    handoffs: w.handoffs,
+    taskMutations: w.taskMutations,
     me: w.me,
     savedMessages: w.savedMessages,
   }));
+  const channelIds = useMemo(() => world.channels.map(channel => channel.id), [world.channels]);
+  const channelListLoaded = world.connected && !!world.me && !world.authFailed;
+  const sidebarLayout = useSidebarLayout(world.me?.id, channelIds, channelListLoaded);
   const isDm = active?.kind === "dm";
   /** the message whose thread is open on the right, if any */
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
   /** the room-details panel, which shares the right-hand slot with a thread */
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [workspaceQuery, setWorkspaceQuery] = useState("");
   /* THREADS OR NOT — his setting, read in the one place that opens them. */
   const p = usePrefs();
+  const workspaceLayout = p.workspaceLayout;
+  const workspaceLayoutRef = useRef<HTMLSelectElement>(null);
+  const priorWorkspaceLayout = useRef<WorkspaceLayout>(workspaceLayout);
+  const studioCollapsed = !!p.collapsed["studio-floor"];
   const threading = p.replies !== "inline";
+  const workspaceAccess = !!active && !!world.me && active.memberIds.includes(world.me.id)
+    && world.channels.some(channel => channel.id === active.id);
+  /* NOT KNOWN YET IS NOT THE SAME AS REFUSED — the second half of "a chosen
+     layout stays chosen". `workspaceAccess` is false during every ordinary
+     start-up and reconnect, simply because the room list has not answered yet.
+     Reading that silence as "this room is not yours" wrote Focus over the saved
+     preference on EVERY launch, so Chat + Files never survived closing the app.
+     The room list has its own answer for this — `channelListLoaded`, the same
+     signal the sidebar's pinned rooms wait for (see `useSidebarLayout`) — so
+     the durable choice is only overwritten when a room is actually open and
+     this person is demonstrably not in it. While the answer is still missing
+     the panel simply does not draw (it is gated on `workspaceAccess` below),
+     which fails closed on screen without touching what he chose.
+     A thread or room-details panel is NOT a reason to hide it, and not a
+     reason to rewrite the preference. Those surfaces stack beside the
+     workspace; only the picker, the panel's own ×, Escape-in-panel, or a
+     known access loss may put him back on Focus. */
+  const workspaceAccessRefused = channelListLoaded && !!active && !!world.me && !workspaceAccess;
+  const showWorkspace = !!active && workspaceAccess && workspaceLayout !== "focus";
+  const closeWorkspace = useCallback(() => { prefs.set({ workspaceLayout: "focus" }); }, []);
+  useEffect(() => {
+    if (workspaceAccessRefused && workspaceLayout !== "focus") closeWorkspace();
+  }, [workspaceAccessRefused, workspaceLayout, closeWorkspace]);
+  useEffect(() => {
+    const enteredFocus = priorWorkspaceLayout.current !== "focus" && workspaceLayout === "focus";
+    priorWorkspaceLayout.current = workspaceLayout;
+    if (!enteredFocus) return;
+    const frame = requestAnimationFrame(() => workspaceLayoutRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [workspaceLayout]);
 
   /* ---- how wide the thread is, and which way he is looking at it ---------
      `p.threadWidth` is HIS number and nothing here ever writes it except his
@@ -3995,11 +4765,15 @@ function ChatScreen({
   const gridRef = useRef<HTMLDivElement>(null);
   const threadOpener = useRef<HTMLElement | null>(null);
   const restoreFocusPending = useRef(false);
-  const space = useSpaceToShare(gridRef);
-  const tooNarrowToSplit = space > 0 && cannotSplit(space);
+  const space = useSpaceToShare(gridRef, `${workspaceLayout}:${studioCollapsed}`);
+  /* Files keep their column while a thread is open, so the room+thread
+     arithmetic has to leave that column out of the shared strip. */
+  const workspaceCol = showWorkspace ? 320 : 0;
+  const threadSpace = Math.max(0, space - workspaceCol);
+  const tooNarrowToSplit = threadSpace > 0 && cannotSplit(threadSpace);
   const takeover = !!threadRoot && (tooNarrowToSplit || p.threadLayout === "focus");
   const previousTakeover = useRef(takeover);
-  const drawnWidth = widthToDraw(p.threadWidth, space);
+  const drawnWidth = widthToDraw(p.threadWidth, threadSpace);
   const chooseWidth = useCallback((px: number) => { prefs.set({ threadWidth: px }); }, []);
   const resetWidth = useCallback(() => { prefs.set({ threadWidth: THREAD_DEFAULT }); }, []);
   const requestThreadFocusRestore = useCallback(() => {
@@ -4042,14 +4816,18 @@ function ChatScreen({
   useEffect(() => { if (!threading) setThreadRoot(null); }, [threading]);
 
   const openThread = useCallback((rootId: ID) => {
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && active !== document.body) {
-      threadOpener.current = active;
-    }
-    setThreadRoot(rootId);
-    setDetailsOpen(false);
-    client.send({ type: "thread", messageId: rootId });
-  }, []);
+    const go = () => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== document.body) {
+        threadOpener.current = active;
+      }
+      setThreadRoot(rootId);
+      setDetailsOpen(false);
+      client.send({ type: "thread", messageId: rootId });
+    };
+    if (detailsOpen) attemptLeave(go);
+    else go();
+  }, [detailsOpen]);
 
   /* A reply found by search. Declared AFTER the "a thread belongs to the
      conversation it was opened from" effect above, so when both fire in the
@@ -4065,62 +4843,186 @@ function ChatScreen({
   }, [openThreadFor?.at, openThreadFor?.id, threading, openThread, onThreadOpened]);
 
   const toggleDetails = useCallback(() => {
-    setDetailsOpen(o => !o);
+    if (detailsOpen) {
+      attemptLeave(() => setDetailsOpen(false));
+      return;
+    }
+    setDetailsOpen(true);
     setThreadRoot(null);
-  }, []);
+  }, [detailsOpen]);
 
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
+  const matchesWorkspace = (label: string) => label.toLowerCase().includes(workspaceQuery.trim().toLowerCase());
+  const sectionPosition = (section: SidebarSectionId): number => {
+    const position = sidebarLayout.layout.sections.indexOf(section);
+    return position < 0 ? SIDEBAR_SECTIONS.indexOf(section) : position;
+  };
+  const pinned = new Set(sidebarLayout.layout.pinnedChannelIds);
+  /* HIS ORDER FIRST, THE ACCOUNT'S ORDER FOR EVERYTHING ELSE. A channel he has
+     never dragged has no rank of its own, so it keeps the place the channel
+     list gave it — `sort` is stable, so that order is preserved exactly. */
+  const channelRank = new Map(sidebarLayout.layout.channelOrder.map((id, index) => [id, index]));
+  const rankOf = (id: string): number => channelRank.get(id) ?? Number.MAX_SAFE_INTEGER;
+  const inChosenOrder = (list: Channel[]): Channel[] => [...list].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  const pinnedChannels = inChosenOrder(channels.filter(c => pinned.has(c.id)));
+  const looseChannels = inChosenOrder(channels.filter(c => !pinned.has(c.id)));
+  /* Written back as the WHOLE list, pinned group then the rest, so the stored
+     order still means something after a pin is added or taken away. */
+  const commitChannelGroup = (isPinnedGroup: boolean, ids: string[]): void => {
+    sidebarLayout.setChannelOrder(isPinnedGroup
+      ? [...ids, ...looseChannels.map(c => c.id)]
+      : [...pinnedChannels.map(c => c.id), ...ids]);
+  };
+  const dropChannel = (dragId: string, overId: string, after: boolean): void => {
+    const isPinnedGroup = pinned.has(dragId);
+    const ids = (isPinnedGroup ? pinnedChannels : looseChannels).map(c => c.id);
+    if (!ids.includes(dragId) || !ids.includes(overId)) return;
+    const rest = ids.filter(id => id !== dragId);
+    const at = rest.indexOf(overId) + (after ? 1 : 0);
+    commitChannelGroup(isPinnedGroup, [...rest.slice(0, at), dragId, ...rest.slice(at)]);
+  };
+  /* The keyboard's version of the same drag: one step at a time, on the row
+     itself, so reordering never depends on a hand that can hold a mouse. */
+  const nudgeChannel = (id: string, name: string, direction: -1 | 1): void => {
+    const isPinnedGroup = pinned.has(id);
+    const ids = (isPinnedGroup ? pinnedChannels : looseChannels).map(c => c.id);
+    const from = ids.indexOf(id);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) {
+      setReorderSaid(`${name} is already ${direction < 0 ? "first" : "last"}`);
+      return;
+    }
+    const next = [...ids];
+    [next[from], next[to]] = [next[to]!, next[from]!];
+    commitChannelGroup(isPinnedGroup, next);
+    setReorderSaid(`${name} moved to position ${to + 1} of ${ids.length}`);
+  };
+  const dropSectionById = (dragId: string, overId: string, after: boolean): void => {
+    const known = (id: string): id is SidebarSectionId => (SIDEBAR_SECTIONS as readonly string[]).includes(id);
+    if (known(dragId) && known(overId)) sidebarLayout.dropSection(dragId, overId, after);
+  };
+  const sectionDrag = useDragReorder(dropSectionById);
+  const channelDrag = useDragReorder(dropChannel);
+  /* WHAT A KEYBOARD MOVE DID, SPOKEN ONCE. A row that moves under a screen
+     reader is silent otherwise: the focus never left the control, so nothing is
+     re-announced and the press feels ignored. */
+  const [reorderSaid, setReorderSaid] = useState("");
+  const visibleChannels = channels.filter(c => matchesWorkspace(c.name));
+  const renderChannel = (c: Channel): React.JSX.Element => {
+    const unread = unreadFor(c);
+    const isPinned = pinned.has(c.id);
+    const list = isPinned ? "channels-pinned" : "channels-loose";
+    const group = isPinned ? pinnedChannels : looseChannels;
+    /* WHERE THIS ROW SITS, SAID OUT LOUD — the same thing the section grip says.
+       A screen reader hearing only "bravo" after Alt+Arrow has no way to know
+       whether the press did anything; the position is the answer. */
+    const place = `position ${group.findIndex(row => row.id === c.id) + 1} of ${group.length}`;
+    const reorderWords = `Drag to reorder ${c.name}, or hold Alt and press the up and down arrow keys`;
+    return (
+      <div key={c.id} className={`channel-row${channelDrag.drag.dragId === c.id ? " is-dragging" : ""}`}
+        data-pinned={isPinned ? "true" : "false"}
+        data-drag-list={list} data-drag-item={c.id} {...dropEdge(channelDrag.drag, c.id)}>
+        <button className={`side-item${c.archivedAt ? " is-archived" : ""}`}
+          data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
+          aria-current={active?.id === c.id ? "true" : "false"}
+          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+          title={`Open #${c.name}
+${reorderWords}`}
+          onPointerDown={channelDrag.grab(list, c.id)}
+          onKeyDown={e => {
+            if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+            e.preventDefault();
+            nudgeChannel(c.id, c.name, e.key === "ArrowUp" ? -1 : 1);
+          }}
+          onClick={e => {
+            /* A drag that ended on this row is not a click on it. A KEYBOARD
+               activation (`detail` 0) never followed a pointer, so it cannot be
+               a drag's leftover click — reading the flag there is what swallowed
+               the first Enter after a cross-row drag, because that drag's click
+               lands on the shared ancestor and never clears the flag here. */
+            const fromPointer = e.detail !== 0;
+            if (fromPointer && channelDrag.moved.current) { channelDrag.moved.current = false; return; }
+            channelDrag.moved.current = false;
+            if (active?.id === c.id && detailsOpen) toggleDetails();
+            else setActiveId(c.id);
+          }}>
+          <span className="hash">#</span>{" "}
+          <span className="txt">{c.name}</span>
+          <RoomVisibility channel={c} size="mark" />
+          <MutedMark channelId={c.id} />
+          <UnreadMarks n={unread} />
+          <span className="sr-only">, {place}</span>
+        </button>
+        <button type="button" className={`channel-pin${isPinned ? " is-pinned" : ""}`}
+          aria-label={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
+          aria-pressed={isPinned} title={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
+          onClick={() => sidebarLayout.togglePinned(c.id)}>★</button>
+      </div>
+    );
+  };
 
   return (
     <div ref={gridRef}
-      className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
-        threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}`}
+      className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${workspaceLayout === "focus" ? " focus-workspace" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
+        threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}${
+        showWorkspace ? " withworkspace" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
-          <h2>Studio floor</h2>
-          {/* The relay does not report who is at their desk, so this counts who
-              is IN this Cloud9 — never "online", which we cannot know. */}
-          <span className="chip"
-            title={`${countOf(agents.length, "agent")} and ` +
-              `${countOf(people.length, "person", "people")} in this Cloud9`}>
-            {people.length + agents.length} here
-          </span>
+          {/* ONE control: the floor's name. Both leftover V glyphs called the
+              same browse-rooms action the name already does; the extra + / ✦
+              duplicated Channels and Direct. The name keeps the row. */}
+          <button className="workspace-name" aria-label={`${WORKSPACE_NAME} — browse rooms`}
+            title={`${WORKSPACE_NAME} — browse rooms`} onClick={onBrowseRooms}>
+            {WORKSPACE_NAME} <span aria-hidden="true">▾</span>
+          </button>
         </div>
         <div className="side-scroll">
-          <div className="side-group">
+          <label className="workspace-search"><IconSearch /><input value={workspaceQuery} onChange={e => setWorkspaceQuery(e.target.value)} placeholder="Search this workspace" aria-label="Search channels and people" /></label>
+          {sidebarLayout.storageUnavailable && (
+            <div className="sidebar-pref-note" role="status">
+              Sidebar changes stay on this screen because device storage is unavailable.
+            </div>
+          )}
+          <div className="sr-only" role="status" aria-live="polite">{reorderSaid}</div>
+          {sidebarLayout.layout.sections.map(section => {
+            if (section === "channels") return (
+          <div key="channels" className={`side-group${sectionDrag.drag.dragId === "channels" ? " is-dragging" : ""}`}
+            data-sidebar-section="channels"
+            data-drag-list="sidebar-sections" data-drag-item="channels" {...dropEdge(sectionDrag.drag, "channels")}>
             <div className="side-head">
               <span className="eyebrow">Channels</span>
+              <SidebarSectionOrder section="channels" label="Channels" position={sectionPosition("channels")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "channels")}
+                dragging={sectionDrag.drag.dragId === "channels"} say={setReorderSaid} />
               <button className="browsebtn" title="Browse rooms you could join"
                 aria-label="Browse rooms" onClick={onBrowseRooms}>⌕</button>
               <button title="New channel" aria-label="New channel" onClick={onNewChannel}>＋</button>
             </div>
             {channels.length === 0
               ? <RailEmpty text="No channels yet." action="Make the first one" onAction={onNewChannel} />
-              : channels.map(c => {
-                const unread = unreadFor(c);
-                return (
-                  <button key={c.id} className={`side-item${c.archivedAt ? " is-archived" : ""}`}
-                    data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
-                    aria-current={active?.id === c.id ? "true" : "false"}
-                    onClick={() => setActiveId(c.id)}>
-                    <span className="hash">#</span>{" "}
-                    <span className="txt">{c.name}</span>
-                    {/* Open, shut or retired, on every row — a room anyone can
-                        walk into must not look like one you were put in. */}
-                    <RoomVisibility channel={c} size="mark" />
-                    <MutedMark channelId={c.id} />
-                    <UnreadMarks n={unread} />
-                  </button>
-                );
-              })}
+              : <>
+                {visibleChannels.some(c => pinned.has(c.id)) && <div className="side-subhead">Pinned</div>}
+                {pinnedChannels.filter(c => matchesWorkspace(c.name)).map(renderChannel)}
+                {visibleChannels.some(c => !pinned.has(c.id)) && <div className="side-subhead">All channels</div>}
+                {looseChannels.filter(c => matchesWorkspace(c.name)).map(renderChannel)}
+              </>}
             <button className="browserooms" onClick={onBrowseRooms}>Browse rooms to join</button>
           </div>
 
-          <div className="side-group">
+            );
+            if (section === "direct") return (
+          <div key="direct" className={`side-group${sectionDrag.drag.dragId === "direct" ? " is-dragging" : ""}`}
+            data-sidebar-section="direct"
+            data-drag-list="sidebar-sections" data-drag-item="direct" {...dropEdge(sectionDrag.drag, "direct")}>
             <div className="side-head">
               <span className="eyebrow">Direct</span>
+              <SidebarSectionOrder section="direct" label="Direct" position={sectionPosition("direct")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "direct")}
+                dragging={sectionDrag.drag.dragId === "direct"} say={setReorderSaid} />
               {/* The same pair as Channels above: browse what exists, or make
                   one. This is where he already comes to add an agent, so this
                   is where the casting room has to be. */}
@@ -4130,7 +5032,7 @@ function ChatScreen({
             </div>
             {agents.length === 0 && humanDms.length === 0 &&
               <RailEmpty text="Nobody hired yet." action="Browse the casting room" onAction={onBrowseMarket} />}
-            {agents.map(a => {
+            {agents.filter(a => matchesWorkspace(a.name)).map(a => {
               const dm = agentDmFor(a);
               const unread = dm
                 ? unreadFor(dm)
@@ -4169,7 +5071,7 @@ Open your chat with ${a.name}`}>
                 </div>
               );
             })}
-            {humanDms.map(c => {
+            {humanDms.filter(c => matchesWorkspace(peerOf(c).name)).map(c => {
               const pr = peerOf(c);
               const unread = unreadFor(c);
               return (
@@ -4185,9 +5087,17 @@ Open your chat with ${a.name}`}>
             })}
           </div>
 
-          <div className="side-group">
+            );
+            return (
+          <div key="people" className={`side-group${sectionDrag.drag.dragId === "people" ? " is-dragging" : ""}`}
+            data-sidebar-section="people"
+            data-drag-list="sidebar-sections" data-drag-item="people" {...dropEdge(sectionDrag.drag, "people")}>
             <div className="side-head">
               <span className="eyebrow">People</span>
+              <SidebarSectionOrder section="people" label="People" position={sectionPosition("people")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "people")}
+                dragging={sectionDrag.drag.dragId === "people"} say={setReorderSaid} />
               {/* Only the owner can mint an invite (the relay refuses everyone
                   else), so only the owner is offered one. */}
               {owner && <button title="Invite a friend" aria-label="Invite a friend" onClick={onInvite}>＋</button>}
@@ -4214,17 +5124,24 @@ Open your chat with ${a.name}`}>
               : <div className="railempty"><span>Only you so far. Vikas adds people to this Cloud9.</span></div>
             )}
           </div>
+            );
+          })}
         </div>
       </aside>
+      <button className="studio-collapse" aria-label={studioCollapsed ? "Expand Studio Floor" : "Collapse Studio Floor"}
+        title={studioCollapsed ? "Expand Studio Floor" : "Collapse Studio Floor"}
+        onClick={() => prefs.set({ collapsed: { ...p.collapsed, "studio-floor": !studioCollapsed } })}>{studioCollapsed ? "›" : "‹"}</button>
 
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
           owner={owner} onNewAgent={onNewAgent} onInvite={onInvite}
-          onOpenHuddles={onOpenHuddles}
+          onOpenHuddles={onOpenHuddles} onOpenCanvas={onOpenCanvas}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
-          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
+          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover}
+          workspaceLayout={workspaceLayout} workspaceLayoutRef={workspaceLayoutRef}
+          onWorkspaceLayout={layout => prefs.set({ workspaceLayout: layout })} />
       ) : (
         <div className="thread">
           <div className="msgs">
@@ -4236,6 +5153,13 @@ Open your chat with ${a.name}`}>
             </div>
           </div>
         </div>
+      )}
+
+      {/* showWorkspace already excluded Focus; the second check is the source-contract the tests read. */}
+      {/* @ts-expect-error workspaceLayout is already Exclude<WorkspaceLayout,"focus"> here */}
+      {active && showWorkspace && workspaceLayout !== "focus" && (
+        <WorkspaceLayoutPanel channel={active} layout={workspaceLayout}
+          onClose={closeWorkspace} />
       )}
 
       {/* THE ROOM, DIMMED BEHIND THE THREAD — Buzz's own manners: it dims
@@ -4259,16 +5183,264 @@ Open your chat with ${a.name}`}>
           window cannot split — a handle that refuses him in silence is the
           thing he likes least, and the take-over above is the real answer at
           that size rather than a dead control with an explanation bolted on. */}
-      {active && threading && threadRoot && !takeover && space > 0 && (
-        <ThreadDivider stored={p.threadWidth} drawn={drawnWidth} space={space}
+      {active && threading && threadRoot && !takeover && threadSpace > 0 && (
+        <ThreadDivider stored={p.threadWidth} drawn={drawnWidth} space={threadSpace}
           onChoose={chooseWidth} onReset={resetWidth} />
       )}
       {active && !threadRoot && detailsOpen && (
         <RoomPanel key={`details-${active.id}`} channel={active}
           onClose={() => setDetailsOpen(false)} onOpenDm={onOpenDm}
-          onLeft={() => setDetailsOpen(false)} />
+          onEditAgent={onEditAgent}
+          onLeft={() => setDetailsOpen(false)} onOpenCanvas={onOpenCanvas} />
       )}
     </div>
+  );
+}
+
+/**
+ * A right-hand workspace is a projection of records already authorised for the
+ * current room. It never treats a local preference, a message sentence, or an
+ * absent response as a file/diff/incident fact. Focus is the safe fallback.
+ */
+function WorkspaceLayoutPanel({ channel, layout, onClose }: {
+  channel: Channel;
+  layout: Exclude<WorkspaceLayout, "focus">;
+  onClose: () => void;
+}): React.JSX.Element {
+  const panelRef = useRef<HTMLElement>(null);
+  /* ESCAPE, BUT ONLY WHEN THE WORKSPACE HAS THE KEYBOARD.
+     This panel used to call `useEscapeCloses`, which is for OVERLAYS: it puts a
+     close on one window-level stack that answers Escape from anywhere, in the
+     capture phase, and calls `stopPropagation` (see the escape-stack notes near
+     the top of this file). That is the wrong shape for a panel that sits BESIDE
+     the conversation, and the escape-stack notes say so themselves — a message
+     being edited has its own Escape ("put my words back") and stealing it is a
+     worse bug. It was being stolen: with a workspace open, Escape while editing
+     a message left the words changed AND rewrote `prefs.workspaceLayout` to
+     Focus. That is this PR's own bug — an ordinary keystroke undoing a durable
+     choice — by keyboard instead of pointer, and it got easier to hit the
+     moment a chosen layout started surviving the next click.
+     So Escape here is scoped to the panel's own keyboard: it acts only while
+     the focus is actually inside the panel. Nothing is captured and nothing is
+     stopped, so no other Escape can be taken from anything. In a narrow window
+     this panel becomes an overlay (`styles.css`, the 860px rule), and Escape
+     still closes it there — to be using an overlay you are focused inside it.
+     Anyone who is not has the picker and the panel's own × instead.
+     WHY NOT `useEscapeCloses(onClose, focusIsInside)` INSTEAD. Gating the push
+     would also keep the key honest, but it puts this panel back on the shared
+     stack for as long as the focus is in it — and `qa.mjs` asserts EXACT stack
+     counts (`cloud9Escape.stacked() === 1` for the actions menu, and others),
+     which a persistent panel would read one too high. Staying off the stack
+     entirely is also what the escape-stack notes prescribe for a surface beside
+     the conversation. It still composes: while ANYTHING is on the stack that
+     listener runs first, in the capture phase, and stops the event — so this
+     one never sees it and the newest thing closes alone, which is what a live
+     drag's cancel or a palette needs. Measured both ways, including with the
+     focus forced in here while a stack entry was open. */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      const panel = panelRef.current;
+      const focused = document.activeElement;
+      if (!panel || !focused || !panel.contains(focused)) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  /* NO CLICK-AWAY HERE, ON PURPOSE — and this is the whole bug it fixes.
+     A workspace layout is not a popover. It is a durable choice made in the
+     "Workspace layout" picker and it lives in `prefs.workspaceLayout`, the same
+     per-user/device preference file as appearance and thread width. This panel
+     only DRAWS that choice; it does not own it.
+     While a pointer-away close was wired here, any click outside the panel —
+     in the conversation, on the sidebar, on empty space — rewrote that saved
+     preference back to Focus. Focus was reachable by ordinary use, so "Chat +
+     Files" never survived the next click and a deliberate view read as a
+     popover that had lost interest.
+     The layout now changes only the ways it was chosen: the picker, this
+     panel's own × ("Focus chat"), Escape, or losing access to the room.
+     `useClickAwayCloses` stays where it belongs — trays and menus whose entire
+     existence is that one open moment. */
+  const world = useWorld(w => ({
+    connected: w.connected,
+    channels: w.channels,
+    meId: w.me?.id,
+    runs: w.runs,
+    runComparisons: w.runComparisons,
+    runComparisonProblems: w.runComparisonProblems,
+    tasks: w.tasks,
+    approvals: w.approvals,
+    handoffs: w.handoffs,
+  }));
+  /* A channel object can outlive membership on a reconnect. Never let that
+     retained object keep a panel's records visible: the current channel frame
+     and current user membership are the only access gate. */
+  const currentChannel = world.channels.find(candidate => candidate.id === channel.id);
+  const hasAccess = !!world.meId && !!currentChannel && currentChannel.memberIds.includes(world.meId);
+  const roomRuns = useMemo(() => Object.values(world.runs)
+    .filter(run => hasAccess && run.channelId === channel.id)
+    .sort((a, b) => (b.finishedAt || b.startedAt) - (a.finishedAt || a.startedAt)),
+  [world.runs, channel.id, hasAccess]);
+  const roomTasks = useMemo(() => world.tasks.filter(task => hasAccess && task.channelId === channel.id),
+    [world.tasks, channel.id, hasAccess]);
+  const roomApprovals = useMemo(() => world.approvals.filter(approval => {
+    if (!hasAccess) return false;
+    if (approval.channelId === channel.id) return true;
+    return !!approval.taskId && roomTasks.some(task => task.id === approval.taskId);
+  }), [world.approvals, roomTasks, channel.id, hasAccess]);
+  const roomHandoffs = useMemo(() => Object.values(world.handoffs)
+    .filter(handoff => hasAccess && handoff.channelId === channel.id), [world.handoffs, channel.id, hasAccess]);
+
+  const diffRunIds = useMemo(() => roomRuns.slice(0, 2).map(run => run.id), [roomRuns]);
+  const [diffDismissed, setDiffDismissed] = useState(false);
+  useEffect(() => { setDiffDismissed(false); }, [channel.id, layout, diffRunIds[0], diffRunIds[1]]);
+  useEffect(() => {
+    if (!hasAccess || layout !== "chat-diff" || diffRunIds.length !== 2) return;
+    client.compareRuns(diffRunIds[1], diffRunIds[0]);
+  }, [hasAccess, layout, diffRunIds[0], diffRunIds[1]]);
+
+  const title = layout === "chat-files" ? "Chat + Files"
+    : layout === "chat-diff" ? "Chat + Diff"
+      : layout === "review" ? "Review" : "Incident";
+  const subtitle = layout === "chat-files" ? "Files shared in this room"
+    : layout === "chat-diff" ? "Recorded run differences"
+      : layout === "review" ? "Durable work records" : "Recorded problems and refusals";
+
+  return (
+    <aside ref={panelRef} className={`workspace-layout-panel layout-${layout}`} aria-label={`${title} workspace`}>
+      <header className="workspace-layout-head">
+        <div className="workspace-layout-title">
+          <span className="eyebrow">{title}</span>
+          <h3>{subtitle}</h3>
+        </div>
+        <button type="button" className="iconbtn workspace-layout-close"
+          aria-label="Close workspace panel and focus chat" title="Focus chat"
+          onClick={onClose}>×</button>
+      </header>
+      {!hasAccess ? (
+        <div className="workspace-layout-state" data-access-state="unavailable" role="alert">
+          This room is no longer available to you. Workspace records are hidden.
+          <button type="button" className="linkish" onClick={onClose}>Focus chat</button>
+        </div>
+      ) : <>
+      {!world.connected && (
+        <p className="workspace-layout-state is-offline" role="status">
+          The connection is offline. Showing only records already received for this room.
+        </p>
+      )}
+
+      {layout === "chat-files" && <RoomFiles channel={channel} />}
+
+      {layout === "chat-diff" && (
+        <div className="workspace-layout-body workspace-diff" data-diff-channel={channel.id}>
+          <p className="workspace-layout-note">
+            Only provider-reported run facts appear here; Cloud9 does not invent a source diff.
+          </p>
+          {diffRunIds.length < 2 ? (
+            <div className="workspace-layout-state" data-diff-state="unavailable">
+              No verified diff source is available for this room yet. A comparison needs two recorded runs.
+            </div>
+          ) : (() => {
+            const key = `${diffRunIds[1]}:${diffRunIds[0]}`;
+            const comparison = world.runComparisons[key];
+            const problem = world.runComparisonProblems[key];
+            if (comparison && !diffDismissed) {
+              return <RunComparisonPanel comparison={comparison} onClear={() => setDiffDismissed(true)} />;
+            }
+            return (
+              <div className="workspace-layout-state" data-diff-state={problem ? "refused" : "looking"}
+                role={problem ? "alert" : "status"}>
+                {problem ? (plainError(problem) ?? problem) : "Checking the two recorded runs for differences…"}
+                {problem && <button type="button" className="linkish"
+                  onClick={() => client.compareRuns(diffRunIds[1], diffRunIds[0])}>Try again</button>}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {layout === "review" && (
+        <div className="workspace-layout-body workspace-review" data-review-channel={channel.id}>
+          {roomRuns.length === 0 && roomTasks.length === 0 && roomApprovals.length === 0 ? (
+            <div className="workspace-layout-state" data-review-state="empty">
+              No review records are available for this room on this device.
+            </div>
+          ) : (
+            <div className="workspace-record-list" role="list" aria-label="Room review records">
+              {roomRuns.slice(0, 8).map(run => (
+                <article key={`run-${run.id}`} className="workspace-record" role="listitem" data-record-kind="run" data-outcome={run.outcome}>
+                  <div className="workspace-record-head"><strong>{run.agentName}</strong><span className="chip">{run.outcome}</span></div>
+                  <p>{run.ask}</p>
+                  <small>{run.provider}{run.files?.length ? ` · ${run.files.length} reported file${run.files.length === 1 ? "" : "s"}` : ""}</small>
+                </article>
+              ))}
+              {roomTasks.slice(0, 8).map(task => (
+                <article key={`task-${task.id}`} className="workspace-record" role="listitem" data-record-kind="task" data-status={task.status}>
+                  <div className="workspace-record-head"><strong>Task</strong><span className="chip">{task.status.replace("_", " ")}</span></div>
+                  <p>{task.title}</p>
+                  {task.summary && <small>{task.summary}</small>}
+                </article>
+              ))}
+              {roomApprovals.slice(0, 8).map(approval => (
+                <article key={`approval-${approval.id}`} className="workspace-record" role="listitem" data-record-kind="approval" data-status={approval.status}>
+                  <div className="workspace-record-head"><strong>Approval</strong><span className="chip">{approval.status}</span></div>
+                  <p>{approval.action}</p>
+                  {approval.detail && <small>{approval.detail}</small>}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {layout === "incident" && (
+        <div className="workspace-layout-body workspace-incidents" data-incident-channel={channel.id}>
+          {(() => {
+            const failedRuns = roomRuns.filter(run => run.outcome !== "ok");
+            const failedTasks = roomTasks.filter(task => ["failed", "cancelled", "blocked"].includes(task.status));
+            const refusedApprovals = roomApprovals.filter(approval => ["rejected", "expired"].includes(approval.status));
+            const lostHandoffs = roomHandoffs.filter(handoff => ["refused", "lost"].includes(handoff.state));
+            const count = failedRuns.length + failedTasks.length + refusedApprovals.length + lostHandoffs.length;
+            if (count === 0) {
+              return <div className="workspace-layout-state" data-incident-state="empty">
+                No incident record is available for this room.
+              </div>;
+            }
+            return (
+              <div className="workspace-record-list" role="list" aria-label="Room incidents">
+                {failedRuns.slice(0, 8).map(run => (
+                  <article key={`run-${run.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="run" data-outcome={run.outcome}>
+                    <div className="workspace-record-head"><strong>{run.agentName}</strong><span className="chip is-madder">{run.outcome}</span></div>
+                    <p>{run.error || run.ask}</p>
+                  </article>
+                ))}
+                {failedTasks.slice(0, 8).map(task => (
+                  <article key={`task-${task.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="task" data-status={task.status}>
+                    <div className="workspace-record-head"><strong>Task</strong><span className="chip is-madder">{task.status}</span></div>
+                    <p>{task.error || task.title}</p>
+                  </article>
+                ))}
+                {refusedApprovals.slice(0, 8).map(approval => (
+                  <article key={`approval-${approval.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="approval" data-status={approval.status}>
+                    <div className="workspace-record-head"><strong>Approval</strong><span className="chip is-madder">{approval.status}</span></div>
+                    <p>{approval.action}</p>
+                  </article>
+                ))}
+                {lostHandoffs.slice(0, 8).map(handoff => (
+                  <article key={`handoff-${handoff.requestId}`} className="workspace-record is-incident" role="listitem" data-record-kind="handoff" data-status={handoff.state}>
+                    <div className="workspace-record-head"><strong>Delegation</strong><span className="chip is-madder">{handoff.state}</span></div>
+                    <p>{handoff.problem || handoff.title}</p>
+                  </article>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+      </>}
+    </aside>
   );
 }
 
@@ -4340,6 +5512,11 @@ function findAsk(messages: Message[], i: number, agent: Message): Message | unde
     if (prev.authorKind === "human" && at.test(prev.text)) return prev;
   }
   return undefined;
+}
+
+/** A durable task is shown only beneath its exact source message and member agent. */
+function taskForMessage(message: Message, tasks: readonly Task[], agents: readonly AgentDef[]): Task | undefined {
+  return taskForSourceMessage(message, tasks, new Set(agents.map(agent => agent.id)));
 }
 
 /* ---- the structured answer card ----
@@ -4517,60 +5694,148 @@ function RunSteps({ steps, truncated }: {
       the lasting answer. Reload mid-turn and the preview is gone — nothing is
       lost, because it was never the record.                                  */
 
+const TURN_LIFECYCLE_LINGER_MS = 8_000;
+
 /**
  * The live steps for one message's turn, one block per agent working on it.
  *
  * `agents` is passed IN rather than read from the client, for the same reason
  * `AgentReceipts` does it: one direction of import, and no cycle.
  */
-function LiveWork({ messageId, agents, channelId }: {
+function LiveWork({ messageId, agents, channelId, task }: {
   messageId: ID; agents: readonly AgentDef[];
-  channelId?: ID;
+  channelId?: ID; task?: Task;
 }): React.JSX.Element | null {
-  const rows = useLiveSteps(messageId);
+  const stepRows = useLiveSteps(messageId);
+  const receipts = useAgentReceipts(messageId);
+  const previews = useResponsePreviews(messageId);
+  /* A receipt, public step, response preview, or exact background task is real
+     evidence. Raw agent presence is intentionally absent from this join. */
+  const rows = useMemo(() => {
+    const byAgent = new Map<ID, { steps: readonly RunStep[]; startedAt: number; signalAt: number }>();
+    for (const row of stepRows) {
+      byAgent.set(row.agentId, { steps: row.steps, startedAt: row.startedAt, signalAt: row.startedAt });
+    }
+    for (const receipt of receipts) {
+      const prior = byAgent.get(receipt.agentId);
+      const preview = previews.find(item => item.agentId === receipt.agentId);
+      byAgent.set(receipt.agentId, {
+        steps: prior?.steps ?? [], startedAt: prior?.startedAt ?? receipt.at,
+        signalAt: Math.max(prior?.signalAt ?? 0, receipt.at, preview?.lastAt ?? 0),
+      });
+    }
+    if (task) {
+      const prior = byAgent.get(task.agentId);
+      const preview = previews.find(item => item.agentId === task.agentId);
+      byAgent.set(task.agentId, {
+        steps: prior?.steps ?? [], startedAt: prior?.startedAt ?? task.updatedAt,
+        signalAt: Math.max(prior?.signalAt ?? 0, task.updatedAt, preview?.lastAt ?? 0),
+      });
+    }
+    return [...byAgent].flatMap(([agentId, evidence]) => {
+      if (!agents.some(agent => agent.id === agentId)) return [];
+      const receipt = receipts.find(item => item.agentId === agentId);
+      const preview = previews.find(item => item.agentId === agentId);
+      const state = turnLifecycleState({
+        taskStatus: task?.agentId === agentId ? task.status : undefined,
+        receipt, steps: evidence.steps, response: preview?.status,
+      });
+      if (!state) return [];
+      return [{ agentId, state, steps: evidence.steps, stoppable: turnLifecycleStoppable({ steps: evidence.steps }),
+        startedAt: evidence.startedAt, signalAt: evidence.signalAt }];
+    });
+  }, [stepRows, receipts, previews, task, agents]);
   const [now, setNow] = useState(() => Date.now());
+  const [shown, setShown] = useState(false);
+  const visibleRows = useMemo(() => rows.filter(row => {
+    const terminal = row.state === "completed" || row.state === "failed" || row.state === "cancelled";
+    return !terminal || now - row.signalAt < TURN_LIFECYCLE_LINGER_MS;
+  }), [rows, now]);
   useEffect(() => {
-    if (rows.length === 0) return;
+    if (visibleRows.length === 0) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [rows.length]);
-  if (rows.length === 0) return null;
+  }, [visibleRows.length]);
+  useEffect(() => {
+    if (visibleRows.length === 0) { setShown(false); return; }
+    const timer = window.setTimeout(() => setShown(true), 650);
+    return () => window.clearTimeout(timer);
+  }, [visibleRows.length, messageId]);
+  if (visibleRows.length === 0 || !shown) return null;
   return (
-    <div className="livework" data-machine="yes" data-msg={messageId}>
-      {rows.map(row => {
-        if (row.steps.length === 0) return null;
-        const name = agents.find(a => a.id === row.agentId)?.name ?? "An agent";
+    <div className="livework turn-lifecycle" data-machine="yes" data-msg={messageId}
+      aria-label="Agent turn activity">
+      {visibleRows.map(row => {
+        const agent = agents.find(a => a.id === row.agentId);
+        if (!agent) return null;
+        const name = agent.name;
+        const sentence = turnLifecycleSentence(name, row.state);
+        const terminal = row.state === "completed" || row.state === "failed" || row.state === "cancelled";
         return (
-          <div key={row.agentId} className="liveturn" data-agent={row.agentId}
-            data-live-steps={row.steps.length}>
-            <div className="live-progress" data-live-progress="true">
+          <details key={row.agentId} className="liveturn" data-agent={row.agentId}
+            data-turn-state={row.state} data-live-steps={row.steps.length}>
+            <summary className="live-progress" data-live-progress="true">
               <div className="live-progress-rail" aria-hidden="true">
-                {row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)}
+                {row.steps.length > 0
+                  ? row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)
+                  : <i data-kind="status" />}
               </div>
               <div className="live-progress-copy">
                 <div className="live-meta">
                   <p className="livehd">
               <span className="pulse" aria-hidden="true" />
-              {name} is working — here's what it's done so far
+              <span data-turn-state-label={row.state}>{sentence}</span>
             </p>
-                  <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(now - row.startedAt)}`}>
-                    Working for {elapsed(now - row.startedAt)}
-                  </span>
-                  <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
+                  {!terminal && <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(Math.max(0, now - row.startedAt))}`}>
+                    Working for {elapsed(Math.max(0, now - row.startedAt))}
+                  </span>}
+                  {!terminal && row.stoppable && <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
                     type="button" disabled={!channelId} title={`Stop ${name} and spend nothing more on this`}
                     onClick={() => channelId && client.send({
-                      type: "send", channelId, text: `@${name} !stop`,
-                    })}>Stop</button>
+                      type: "send", channelId, text: `!stop ${row.agentId}`,
+                     })}>Stop</button>}
                 </div>
-                <RunSteps steps={row.steps} />
               </div>
-            </div>
+            </summary>
+            {row.steps.length > 0 && <RunSteps steps={row.steps.map(step => ({ ...step, detail: undefined }))} />}
             {/* SAID OUT LOUD on the thing itself, the same courtesy a receipt
                 pays: this is live, and it is not the record. The record lands
                 under the reply when the turn ends. */}
             <p className="livenote">
-              Live from the app as it works. The full record appears when it finishes.
+              {terminal
+                ? "This public turn card is not the stored record and will clear shortly."
+                : "Live from the app as it works. The full record appears when it finishes."}
             </p>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A provider-backed answer preview, deliberately separate from tool activity. */
+function ResponsePreview({ messageId, agents }: {
+  messageId: ID; agents: readonly AgentDef[];
+}): React.JSX.Element | null {
+  const previews = useResponsePreviews(messageId)
+    .filter(preview => agents.some(agent => agent.id === preview.agentId));
+  if (previews.length === 0) return null;
+  return (
+    <div className="response-preview" data-response-preview="true" data-msg={messageId}>
+      {previews.map(preview => {
+        const name = agents.find(agent => agent.id === preview.agentId)!.name;
+        return (
+          <div key={`${preview.agentId}:${preview.turnId}`} className="response-preview-bubble"
+            data-response-state={preview.status}>
+            <div className="response-preview-meta"><b>{name}</b><span>Provisional response</span></div>
+            {/* Deltas stay quiet; only the bounded lifecycle status is polite.
+                The durable message itself remains the source of truth. */}
+            <div className="response-preview-text" aria-live="off">
+              {preview.text || <span className="response-preview-wait">Preparing a response…</span>}
+            </div>
+            <div className="response-preview-state" role="status" aria-live="polite">
+              {preview.status === "finalizing" ? "Response received; saving it…" : "Still working…"}
+            </div>
           </div>
         );
       })}
@@ -4578,19 +5843,7 @@ function LiveWork({ messageId, agents, channelId }: {
   );
 }
 
-/** Elapsed visible wait time for providers that have not emitted an inspectable
- * step yet. This is intentionally a clock, not a made-up activity label. */
-function WorkingElapsed(): React.JSX.Element {
-  const [startedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return <>Working for {elapsed(now - startedAt)}</>;
-}
-
-/** ✓ / ✕ / ⏸ for the three ways a turn can end. */
+/** ✓ / ✕ / ⏸ for the four durable ways a turn can end. */
 function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
   if (outcome === "failed") {
     return (
@@ -4601,7 +5854,26 @@ function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Elem
     );
   }
   if (outcome === "cancelled") return <MarkClock />;
+  if (outcome === "refused") return <span className="run-refused-mark" aria-label="Refused">!</span>;
   return <MarkAnswer />;
+}
+
+const RUN_OUTCOME_WORDS: Record<RunRecord["outcome"], string> = {
+  ok: "Completed",
+  failed: "Failed",
+  cancelled: "Stopped",
+  refused: "Refused",
+};
+
+/** The final state is a durable RunRecord fact, never a live-signal guess. */
+function RunOutcomeBadge({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
+  const words = RUN_OUTCOME_WORDS[outcome];
+  return (
+    <span className={`chip run-outcome-badge out-${outcome}`} data-outcome-badge={outcome}
+      role="status" aria-label={`Outcome: ${words}`}>
+      {words}
+    </span>
+  );
 }
 
 /**
@@ -4610,6 +5882,9 @@ function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Elem
  */
 function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const recovery = world.runRecovery[record.id];
   const provider = PROVIDER_LABEL[record.provider] ?? record.provider;
   // what the app SAID it used, or failing that what we asked for — and if
   // neither was reported, the app's name alone rather than an invented model
@@ -4670,16 +5945,58 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
       : ["went-wrong", "What went wrong", plainError(record.error)]);
   }
 
+  /* The compact card keeps the frequently needed facts above the fold. These
+     are the less frequent execution facts behind one keyboard-accessible
+     disclosure. Every value is optional because an absent provider report is
+     not a zero or an estimate. */
+  const tests = record.tests ?? testFactsFromSteps(record.steps);
+  const receiptRows: [string, string, React.ReactNode][] = [];
+  if (record.effort) {
+    receiptRows.push(["effort", "Effort", record.effort]);
+  }
+  if (record.invocation) {
+    receiptRows.push(["permission", "Permission", record.invocation.permissionScope === "readOnly"
+      ? "Read-only" : "Agent actions"]);
+  }
+  if (record.files?.length) {
+    receiptRows.push(["files", "Files changed", <span className="runreceipt-list">{record.files.join(", ")}</span>]);
+  }
+  if (tests.length) {
+    receiptRows.push(["tests", "Tests run", <span className="runreceipt-list">{tests.map((test, i) => (
+      <span key={`${test.command}-${i}`} className="runreceipt-test">
+        {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+      </span>
+    ))}</span>]);
+  }
+  if (record.pullRequest) {
+    receiptRows.push(["pull-request", "Pull request", isLink(record.pullRequest)
+      ? <a href={record.pullRequest} target="_blank" rel="noreferrer noopener">{record.pullRequest}</a>
+      : record.pullRequest]);
+  }
+  if (record.branch) receiptRows.push(["branch", "Branch", record.branch]);
+  if (record.commit) receiptRows.push(["commit", "Commit", record.commit]);
+  if (record.artifacts?.length) {
+    receiptRows.push(["artifacts", "Artifacts", <span className="runreceipt-list">{record.artifacts.map((artifact, i) => (
+      <span key={`${artifact.id}-${i}`} className="runreceipt-artifact">
+        {artifact.name}{artifact.available === false ? " · unavailable" : ""}
+      </span>
+    ))}</span>]);
+  }
+
   const title = record.outcome === "failed"
     ? `${record.agentName} didn't finish “${record.ask}”`
     : record.outcome === "cancelled"
       ? `${record.agentName} was stopped on “${record.ask}”`
-      : `${record.agentName} finished “${record.ask}”`;
+      : record.outcome === "refused"
+        ? `${record.agentName} was refused before “${record.ask}”`
+    : `${record.agentName} finished “${record.ask}”`;
 
   return (
     <div className={`callout run out-${record.outcome}`} data-run={record.id}
       data-outcome={record.outcome} data-provider={record.provider}>
-      <div className="hd"><RunMark outcome={record.outcome} /><h4>{title}</h4></div>
+      <div className="hd"><RunMark outcome={record.outcome} /><h4>{title}</h4>
+        <RunOutcomeBadge outcome={record.outcome} />
+      </div>
       {/* verbatim from shared — the one line a non-developer reads, and the
           reason this whole feature exists */}
       <p className="runsum">{summarizeRun(record)}</p>
@@ -4690,6 +6007,26 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
           </React.Fragment>
         ))}
       </dl>
+      {receiptRows.length > 0 && (
+        <>
+          <button className="runreceipt-toggle" type="button" aria-expanded={receiptOpen}
+            aria-controls={`run-receipt-${record.id}`} onClick={() => setReceiptOpen(v => !v)}>
+            <span className="tri" aria-hidden="true">{receiptOpen ? "▾" : "▸"}</span>
+            Execution receipt <span className="n">{countOf(receiptRows.length, "fact")}</span>
+          </button>
+          {receiptOpen && (
+            <section className="runreceipt" id={`run-receipt-${record.id}`} aria-label="Execution receipt details">
+              <dl className="kv">
+                {receiptRows.map(([key, label, value]) => (
+                  <React.Fragment key={key}>
+                    <dt data-receipt-row={key}>{label}</dt><dd data-receipt-row={key}>{value}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            </section>
+          )}
+        </>
+      )}
       {record.steps.length > 0 && (
         <button className="runmore" aria-expanded={open} data-steps={record.steps.length}
           onClick={() => setOpen(v => !v)}>
@@ -4699,7 +6036,74 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
       )}
       {open && record.steps.length > 0 &&
         <RunSteps steps={record.steps} truncated={record.truncated} />}
+      {(record.outcome === "failed" || record.outcome === "cancelled" || record.outcome === "refused") && (
+        <RunRecoveryCard record={record} recovery={recovery} onInspect={() => setOpen(true)} />
+      )}
     </div>
+  );
+}
+
+function RunRecoveryCard({ record, recovery, onInspect }: {
+  record: RunRecord;
+  recovery?: { decision: import("@cloud9/shared").RecoveryDecision; requestId?: ID; pending?: boolean; problem?: string };
+  onInspect: () => void;
+}): React.JSX.Element {
+  const resume = recovery?.decision.actions.find(a => a.mode === "resume");
+  const retry = recovery?.decision.actions.find(a => a.mode === "retry");
+  const restart = recovery?.decision.actions.find(a => a.mode === "restart");
+  /* A missing decision means the relay has not authorized anything yet. In
+     particular, do not let an absent row temporarily enable a recovery click
+     while the challenge is still in flight. */
+  const decisionUnavailable = !recovery || recovery.decision.actions.length === 0;
+  const canResume = resume?.available === true;
+  /* Before the first challenge there is no relay decision to authorize a
+     side-effect yet. Re-run/Restart stay as the explicit challenge entry
+     points; once a decision exists, only its `available: true` fact enables
+     the action. */
+  const canRetry = decisionUnavailable || retry?.available === true;
+  const canRestart = decisionUnavailable || restart?.available === true;
+  const resumeUnavailable = !canResume;
+  const resumeReason = resume?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this provider can continue the run"
+      : "the provider has not reported a safely resumable session");
+  const retryReason = retry?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this run can be safely re-run"
+      : "the provider did not report a safely re-runnable run");
+  const restartReason = restart?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this run can safely restart"
+      : "the provider did not report a safely restartable run");
+  const pending = recovery?.pending === true;
+  return (
+    <section className="run-recovery" data-run-recovery={record.id} aria-label="Run actions">
+      <strong>Recover this run</strong>
+      <p className="muted">{plainError(record.error) ?? "This run did not finish."}</p>
+      {recovery?.problem && <p className="muted recovery-reason">{plainError(recovery.problem) ?? recovery.problem}</p>}
+      <div className="run-recovery-actions">
+        <button className="btn small primary" type="button" disabled={pending || !canRetry}
+          aria-disabled={pending || !canRetry}
+          title={retryReason}
+          onClick={() => client.recoverRun(record.id, "retry")}>
+          {pending ? "Checking…" : "Re-run"}
+        </button>
+        <button className="btn small" type="button" disabled={pending || !canResume}
+          aria-disabled={pending || !canResume}
+          title={resumeReason}
+          onClick={() => client.recoverRun(record.id, "resume")}>
+          Continue
+        </button>
+        <button className="btn small" type="button" disabled={pending || !canRestart}
+          aria-disabled={pending || !canRestart}
+          title={restartReason}
+          onClick={() => client.recoverRun(record.id, "restart")}>
+          Restart with prior context
+        </button>
+        <button className="linkish" type="button" onClick={onInspect}>Inspect record</button>
+      </div>
+      {decisionUnavailable && <p className="muted recovery-reason">
+        Re-run and Restart need a provider safety check before they can start. Selecting one requests that check.
+      </p>}
+      {resumeUnavailable && <p className="muted recovery-reason">Continue unavailable: {resumeReason}</p>}
+    </section>
   );
 }
 
@@ -4740,19 +6144,40 @@ function TaskRun({ runId }: { runId: string }): React.JSX.Element {
 function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
   // subscribed for the re-render: the list itself is read through the client,
   // so there is one spelling of a history's key and not two
-  useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [open, setOpen] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ID[]>([]);
   const list = client.runsFor("agent", agentId);
   useEffect(() => { client.askRuns("agent", agentId, RUN_HISTORY_LIMIT); }, [agentId]);
+  useEffect(() => {
+    if (selected.length === 2) client.compareRuns(selected[0], selected[1]);
+  }, [selected]);
+  const comparison = selected.length === 2
+    ? client.runComparison(selected[0], selected[1])
+    : undefined;
+  const toggleComparison = (runId: ID): void => {
+    setSelected(current => current.includes(runId)
+      ? current.filter(id => id !== runId)
+      : current.length < 2 ? [...current, runId] : [current[1], runId]);
+  };
 
   return (
     <div className="recentwork" data-agent={agentId}>
+      <div className="run-compare-toolbar" aria-label="Compare runs">
+        <span className="muted">Select two runs to compare their recorded facts side by side.</span>
+        {selected.length > 0 && (
+          <button className="linkish" type="button" onClick={() => setSelected([])}>
+            Clear selection ({selected.length}/2)
+          </button>
+        )}
+      </div>
       {!list.asked && <div className="d-empty">Looking up what it has been doing…</div>}
       {list.asked && list.entries.length === 0 && (
         <div className="d-empty">Nothing yet. Every turn it takes from now on is written down here.</div>
       )}
       {list.entries.map((e: RunListEntry) => (
         <div className="workrow" key={e.id} data-run={e.id} data-outcome={e.outcome}>
+          <div className="workrow-head">
           <button className="wr-head" aria-expanded={open === e.id}
             onClick={() => {
               const next = open === e.id ? null : e.id;
@@ -4764,13 +6189,28 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
               <b>{e.ask}</b>
               <span className="wr-sum">{e.summary}</span>
             </span>
-            <span className={`chip ${e.outcome === "ok" ? "is-pine" : e.outcome === "failed" ? "is-madder" : ""}`}>
-              {e.outcome === "ok" ? "Done" : e.outcome === "failed" ? "Didn't finish" : "Stopped"}
+            <span className={`chip ${e.outcome === "ok" ? "is-pine" : e.outcome === "failed" || e.outcome === "refused" ? "is-madder" : ""}`}>
+              {e.outcome === "ok" ? "Done" : e.outcome === "failed" ? "Didn't finish" : e.outcome === "refused" ? "Refused" : "Stopped"}
             </span>
           </button>
+          <button className="btn small compare-toggle" type="button"
+            aria-pressed={selected.includes(e.id)} data-compare-run={e.id}
+            onClick={() => toggleComparison(e.id)}>
+            {selected.includes(e.id) ? "Selected" : "Compare"}
+          </button>
+          </div>
           {open === e.id && <TaskRun runId={e.id} />}
         </div>
       ))}
+      {selected.length === 2 && (
+        comparison
+          ? <RunComparisonPanel comparison={comparison} onClear={() => setSelected([])} />
+          : <p className="muted run-comparison-wait" role="status">
+            {world.runComparisonProblems[`${selected[0]}:${selected[1]}`]
+              ? <>{plainError(world.runComparisonProblems[`${selected[0]}:${selected[1]}`]) ?? world.runComparisonProblems[`${selected[0]}:${selected[1]}`]} <button className="linkish" type="button" onClick={() => client.compareRuns(selected[0], selected[1])}>Try again</button></>
+              : "Comparing the two selected runs..."}
+          </p>
+      )}
     </div>
   );
 }
@@ -4785,6 +6225,74 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
  * nothing. Clearing a note asks the engine to delete it and report back, so the
  * panel never shows one the store no longer holds.
  */
+function comparisonValue(value: React.ReactNode): React.ReactNode {
+  return value === undefined || value === null || value === ""
+    ? <span className="muted">Not reported</span>
+    : value;
+}
+
+function RunComparisonPanel({ comparison, onClear }: {
+  comparison: RunComparison;
+  onClear: () => void;
+}): React.JSX.Element {
+  const sides = [comparison.left, comparison.right];
+  const accessible = sides.filter(side => side.accessible);
+  const values = (side: RunComparison["left"]): Record<string, React.ReactNode> => {
+    if (!side.accessible) return {};
+    return {
+      Ask: side.ask,
+      Agent: side.agent,
+      Model: side.model,
+      Effort: side.effort,
+      Provider: side.provider,
+      Duration: humanDuration(side.durationMs),
+      ...(side.costUsd !== undefined ? { Cost: humanMoney(side.costUsd) } : {}),
+      Outcome: side.outcome,
+      Steps: side.steps.length ? side.steps.map(step => `${step.seq}. ${step.label}`).join("; ") : undefined,
+      Files: side.files.length ? side.files.join(", ") : undefined,
+      "Pull request": side.pullRequest,
+      Branch: side.branch,
+      Commit: side.commit,
+      Artifacts: side.artifacts.length ? side.artifacts.map(a => a.name || a.id).join(", ") : undefined,
+    };
+  };
+  const rows = ["Ask", "Agent", "Model", "Effort", "Provider", "Duration", "Cost", "Outcome", "Steps", "Files", "Pull request", "Branch", "Commit", "Artifacts"]
+    .filter(label => accessible.some(side => values(side)[label] !== undefined));
+  return (
+    <section className="run-comparison" data-run-comparison={`${comparison.left.runId}:${comparison.right.runId}`} aria-label="Run comparison">
+      <div className="run-comparison-heading">
+        <div>
+          <h4>Side-by-side run comparison</h4>
+          <p className="muted">Recorded public facts only; this view does not infer a quality winner.</p>
+        </div>
+        <button className="linkish" type="button" onClick={onClear}>Clear</button>
+      </div>
+      <div className="run-compare-grid">
+        {sides.map((side, index) => (
+          <article className="run-compare-side" key={`${side.runId}-${index}`} data-accessible={side.accessible ? "yes" : "no"}>
+            <h5>Run {index + 1}</h5>
+            {!side.accessible
+              ? <p className="muted">Run unavailable. Details and links are hidden.</p>
+              : <dl className="kv">{rows.map(label => (
+                <React.Fragment key={label}>
+                  <dt>{label}</dt><dd>{comparisonValue(values(side)[label])}</dd>
+                </React.Fragment>
+              ))}</dl>}
+          </article>
+        ))}
+      </div>
+      {comparison.differences.length > 0 && (
+        <div className="run-comparison-differences">
+          <h5>Differences</h5>
+          <ul>{comparison.differences.map(difference => (
+            <li key={difference.field}><b>{difference.field}</b>: {comparisonValue(difference.left)} / {comparisonValue(difference.right)}</li>
+          ))}</ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   useSyncExternalStore(client.subscribe, client.getSnapshot);
   const held = client.memoryFor(agentId);
@@ -4824,23 +6332,145 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   );
 }
 
+/**
+ * THIS PICKER SITS IN A ROOM HEADER AND IS DELIBERATELY NOT PER-ROOM.
+ *
+ * `workspaceLayout` is ONE field in `Prefs` — a per-user/device choice, kept
+ * beside appearance, thread width and message density, and written to the same
+ * durable preferences. Choosing "Chat + Files" in one room chooses it in every
+ * room, and it stays chosen across restarts. That is the intended behaviour and
+ * matches how every other viewing preference in Cloud9 already works.
+ *
+ * It is written down here because the control's PLACE argues the opposite: it
+ * lives in `.chathead`, so it reads like a setting about this room. If that ever
+ * gets reported as "I set it in one room and it changed in all of them", this is
+ * the cause and it is a design decision, not a new bug — the answer would be to
+ * make the scope visible (or make it per-room on purpose), not to hunt a leak.
+ */
+function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
+  layout: WorkspaceLayout;
+  onChange: (layout: WorkspaceLayout) => void;
+  selectRef?: React.RefObject<HTMLSelectElement>;
+}): React.JSX.Element {
+  return (
+    <label className="workspace-layout-control">
+      <span className="view-label">View</span>
+      <select ref={selectRef} aria-label="Workspace layout" value={layout}
+        onChange={event => {
+          const next = event.target.value;
+          if (isWorkspaceLayout(next)) onChange(next);
+        }}>
+        {WORKSPACE_LAYOUT_OPTIONS.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Files and Diff set the durable workspace layout. Review/Incident stay in ⋯. */
+function WorkspaceLayoutButtons({ layout, onChange, filesRef }: {
+  layout: WorkspaceLayout;
+  onChange: (layout: WorkspaceLayout) => void;
+  filesRef?: React.RefObject<HTMLButtonElement>;
+}): React.JSX.Element {
+  const pick = (next: "chat-files" | "chat-diff") => {
+    onChange(layout === next ? "focus" : next);
+  };
+  return (
+    <div className="header-view-btns" role="group" aria-label="Workspace layout">
+      <button ref={filesRef} type="button"
+        className="header-layout-btn"
+        aria-pressed={layout === "chat-files"}
+        aria-label="Show files beside this conversation"
+        onClick={() => pick("chat-files")}>Files</button>
+      <button type="button"
+        className="header-layout-btn"
+        aria-pressed={layout === "chat-diff"}
+        aria-label="Show diff beside this conversation"
+        onClick={() => pick("chat-diff")}>Diff</button>
+    </div>
+  );
+}
+
+/**
+ * AN AGENT IN THIS ROOM IS STUCK, SAID IN THE ROOM'S OWN HEADER.
+ *
+ * THE HOLE THIS FILLS (installed walk, 2026-08-12). The only place this Cloud9
+ * ever said "this agent is stuck" was its Studio-sidebar row — and the Focus
+ * workspace layout hides that sidebar outright
+ * (`.chatgrid.focus-workspace>.sidebar{display:none}`). So a person working in
+ * Focus could have an agent stuck on a job and NO surface anywhere on screen
+ * that said so. The state was stored, correct and invisible, which from where
+ * he sits is the same as the app not knowing.
+ *
+ * IT PROJECTS, IT NEVER DECIDES. Every word comes from `presenceSays` — the one
+ * owner the sidebar row, the DM header and the job card all read — over the
+ * agents that are really members of THIS room. There is no second status
+ * system, nothing optimistic, and nothing at all when no stored job is in
+ * trouble: a chip that can only ever mean "fine" is furniture, and furniture is
+ * what people stop reading.
+ *
+ * THE CONCISE STATE ONLY, exactly as the sidebar row does it. The full reason
+ * belongs to the job card, so it is one hover away here and one press away in
+ * Jobs — which is where this chip goes.
+ *
+ * WHY IT IS ABOUT THE AGENT AND NOT ABOUT THE ROOM. `agentTrouble` answers
+ * "is this agent in trouble" across everything it has been asked to do, and it
+ * is the only owner of that answer. Re-scoping the question to this room's jobs
+ * here would be a SECOND answer that could disagree with the sidebar and the
+ * crew card, and the words say what is true either way: this agent, named here
+ * because it is in this room, is stuck.
+ */
+function AgentTroubleChip({ agents, world, onOpenTasks }: {
+  agents: AgentDef[];
+  world: Pick<World, "tasks" | "presence">;
+  onOpenTasks: () => void;
+}): React.JSX.Element | null {
+  const rows = agents
+    .map(agent => ({ agent, says: presenceSays(world, agent.id, presenceOf(world, agent.id)) }))
+    .filter(row => row.says.trouble !== null);
+  if (rows.length === 0) return null;
+  /* STUCK BEFORE FALLEN OVER, the same order the room's job list uses: the
+     stuck one is the one still not moving, so it is the one he is asked to
+     look at first. */
+  const lead = rows.find(row => row.says.trouble === "blocked") ?? rows[0];
+  const others = rows.length - 1;
+  return (
+    <button type="button" className={`chip agenttrouble is-${lead.says.trouble}`}
+      data-agent={lead.agent.name} data-trouble={lead.says.trouble}
+      data-trouble-count={rows.length}
+      aria-label={`${lead.agent.name}: ${lead.says.word}. Open Jobs to read why.`}
+      title={rows.map(row => `${row.agent.name} — ${row.says.title}`).join("\n")}
+      onClick={onOpenTasks}>
+      <span className="dot wait" aria-hidden="true" />
+      <b className="an-name">{lead.agent.name}</b>
+      <span className="an-state introuble"><b>{lead.says.word}</b></span>
+      {others > 0 && <span className="tr-more">+{others} more</span>}
+    </button>
+  );
+}
+
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   owner, onNewAgent, onInvite,
-  onOpenHuddles,
+  onOpenHuddles, onOpenCanvas,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
-  takeover,
+  takeover, workspaceLayout, workspaceLayoutRef, onWorkspaceLayout,
 }: {
-  channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
+  channel: Channel; lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   owner: boolean; onNewAgent: () => void; onInvite: () => void;
-  onOpenHuddles: () => void;
+  onOpenHuddles: () => void; onOpenCanvas: (projectId?: ID) => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
   onToggleDetails: () => void; detailsOpen: boolean;
   /** The room is covered by a take-over thread and must leave the tab order. */
   takeover: boolean;
+  workspaceLayout: WorkspaceLayout;
+  workspaceLayoutRef: React.RefObject<HTMLSelectElement>;
+  onWorkspaceLayout: (layout: WorkspaceLayout) => void;
 }): React.JSX.Element {
   countRender("ChatView");
   /* WHAT THIS SCREEN ACTUALLY READS — nothing else can redraw it.
@@ -4850,6 +6480,8 @@ function ChatView({
      `page` are narrowed to THIS channel for the same reason. */
   const world = useWorld(w => ({
     messages: w.messages[channel.id],
+    connected: w.connected,
+    humanTyping: w.humanTyping[channel.id],
     page: w.pages[channel.id],
     prepended: w.prepended,
     users: w.users,
@@ -4858,22 +6490,114 @@ function ChatView({
     agentStatus: w.agentStatus,
     presence: w.presence,
     tasks: w.tasks,
+    handoffs: w.handoffs,
+    taskMutations: w.taskMutations,
     approvals: w.approvals,
     savedMessages: w.savedMessages,
     savedPending: w.savedPending,
+    members: w.members[channel.id],
+    channelPins: w.channelPins[channel.id],
+    channelPinPending: w.channelPinPending,
+    projects: w.projects,
+    canvases: w.canvases,
+    messageStatuses: w.messageStatuses,
+    channelMemoryPolicies: w.channelMemoryPolicies,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
+  const humanTyping = useMemo(() => (world.humanTyping ?? [])
+    .filter(signal => signal.typing && signal.userId !== world.me?.id), [world.humanTyping, world.me?.id]);
   const threading = !!onOpenThread;
   /** the message this conversation's own box is answering, in inline mode */
   const [replyingTo, setReplyingTo] = useState<ID | null>(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const headerMenuRef = useRef<HTMLDivElement>(null);
-  useEscapeCloses(() => setHeaderMenuOpen(false), headerMenuOpen);
+  const headerOverflowRef = useRef<HTMLButtonElement>(null);
+  const closeHeaderMenu = useCallback(() => {
+    setHeaderMenuOpen(false);
+    queueMicrotask(() => headerOverflowRef.current?.focus());
+  }, []);
+  useEscapeCloses(closeHeaderMenu, headerMenuOpen);
   useClickAwayCloses(headerMenuRef, () => setHeaderMenuOpen(false), headerMenuOpen);
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const frame = requestAnimationFrame(() => focusFirstMenuItem(headerMenuRef.current));
+    return () => cancelAnimationFrame(frame);
+  }, [headerMenuOpen]);
   useEffect(() => { setHeaderMenuOpen(false); }, [channel.id]);
   useEffect(() => { setReplyingTo(null); }, [channel.id]);
   useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
   const streamRef = useRef<HTMLDivElement>(null);
+  /* A read receipt is earned by viewport visibility, not by mounting a room.
+     The cursor is the (timestamp, canonical id) pair, so messages sharing a
+     millisecond are ordered deterministically. */
+  useEffect(() => {
+    if (!world.connected || typeof IntersectionObserver === "undefined") return;
+    const root = streamRef.current;
+    if (!root) return;
+    const byId = new Map((world.messages ?? []).map(message => [message.id, message]));
+    const pending = new Map<ID, Message>();
+    let timer: number | undefined;
+    const flush = () => {
+      if (pending.size === 0) return;
+      const ordered = [...pending.values()].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+      const cursor = ordered.at(-1)!;
+      client.markRead(channel.id, cursor.ts, cursor.id);
+      // A human recipient's read acknowledgement is authenticated by the
+      // relay from this socket.  Agent-authored messages are intentionally not
+      // acknowledged as human reads.
+      for (const message of ordered) {
+        if (message.authorKind === "human" && message.authorId !== world.me?.id) {
+          client.send({ type: "messageReceipt", channelId: channel.id, messageId: message.id,
+            status: "read", ts: message.ts, messageIdCursor: message.id });
+        }
+      }
+      pending.clear();
+    };
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.6) continue;
+        const id = (entry.target as HTMLElement).dataset.msg;
+        const message = id ? byId.get(id) : undefined;
+        if (!message) continue;
+        pending.set(message.id, message);
+      }
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(flush, 120);
+    }, { root, threshold: [0.6] });
+    root.querySelectorAll<HTMLElement>(".msg[data-msg]").forEach(node => observer.observe(node));
+    return () => {
+      observer.disconnect();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [channel.id, world.connected, world.messages, world.me?.id]);
+
+  /* Re-check only rows that are genuinely visible when the app regains focus;
+     focus alone does not claim the conversation was read. */
+  useEffect(() => {
+    const onFocus = () => {
+      if (!world.connected) return;
+      const root = streamRef.current;
+      const rootRect = root?.getBoundingClientRect();
+      if (!root || !rootRect) return;
+      const byId = new Map((world.messages ?? []).map(message => [message.id, message]));
+      const visible = [...root.querySelectorAll<HTMLElement>(".msg[data-msg]")]
+        .map(node => ({ node, rect: node.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.top >= rootRect.top && rect.bottom <= rootRect.bottom)
+        .map(({ node }) => byId.get(node.dataset.msg ?? ""))
+        .filter((message): message is Message => !!message)
+        .sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id)).at(-1);
+      if (visible) {
+        client.markRead(channel.id, visible.ts, visible.id);
+        if (visible.authorKind === "human" && visible.authorId !== world.me?.id) {
+          client.send({ type: "messageReceipt", channelId: channel.id, messageId: visible.id,
+            status: "read", ts: visible.ts, messageIdCursor: visible.id });
+        }
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [channel.id, world.connected, world.messages, world.me?.id]);
+
   const roomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const room = roomRef.current;
@@ -5211,7 +6935,8 @@ function ChatView({
         && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000
         && !m.replyTo && !prev.replyTo;
       const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
-      const firstUnread = !markedUnread && openedAt > 0 && m.ts > openedAt && m.authorId !== world.me?.id;
+      const firstUnread = !markedUnread && openedAt.ts > 0 && afterCursor(m, openedAt)
+        && m.authorId !== world.me?.id;
       if (firstUnread) markedUnread = true;
       return { m, cont, dayStart, firstUnread, ask };
     });
@@ -5240,19 +6965,34 @@ function ChatView({
   }, [world.agents]);
 
   /** the finished job behind a "📦 Task done" message — see `doneRunIdsFor` */
-  const doneRunIds = useMemo(
-    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   const doneRunIds = useMemo(
+     () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+  const taskByMessage = useMemo(() => {
+    const map = new Map<ID, Task>();
+    for (const message of messages) {
+      const task = taskForMessage(message, world.tasks, agents);
+      if (task) map.set(message.id, task);
+    }
+    return map;
+  }, [messages, world.tasks, agents]);
+  const handoffByMessage = useMemo(() => {
+    const map = new Map<ID, HandoffRequestState>();
+    for (const handoff of Object.values(world.handoffs)) {
+      if (handoff.channelId === channel.id) map.set(handoff.sourceMessageId, handoff);
+    }
+    return map;
+  }, [world.handoffs, channel.id]);
+  const taskMutationByMessage = useMemo(() => {
+    const map = new Map<ID, World["taskMutations"][ID]>();
+    for (const mutation of Object.values(world.taskMutations)) {
+      if (mutation.sourceMessageId) map.set(mutation.sourceMessageId, mutation);
+    }
+    return map;
+  }, [world.taskMutations]);
 
   /* Held still between renders, or every bubble redraws on every frame — see
      the contract on `MessageRow`. */
   const onInlineReply = useCallback((id: ID) => setReplyingTo(id), []);
-
-  const working = useMemo(
-    () => agents.filter(a => world.agentStatus[a.id] === "working"),
-    [agents, world.agentStatus]);
-  const liveWorkNow = useLiveWorkByAgent();
-  const workingWithoutLiveSteps = useMemo(
-    () => working.filter(a => !liveWorkNow[a.id]), [working, liveWorkNow]);
 
   /**
    * The approvals that belong in THIS conversation.
@@ -5268,7 +7008,7 @@ function ChatView({
    * vanished: "he never saw it" is the outcome this card exists to make
    * visible. It is not counted below — nothing is waiting on him any more.
    */
-  const { mine: myApprovalsAll, waiting: waitingAll } =
+  const { involved: myApprovalsAll, waiting: waitingAll } =
     useMyApprovals(world.approvals, world.me?.id);
   const inThisRoom = (ap: Approval): boolean => {
     if (ap.channelId) return ap.channelId === channel.id;
@@ -5278,6 +7018,14 @@ function ChatView({
   const myApprovals = myApprovalsAll.filter(
     ap => (ap.status === "pending" || ap.status === "expired") && inThisRoom(ap));
   const waitingHere = waitingAll.filter(inThisRoom);
+  const pinRows = world.members ?? [];
+  const myRole = pinRows.find(row => row.memberId === world.me?.id)?.role;
+  const canManagePins = !isDm && mayAdministerChannel(myRole);
+  const policyRows = (world.channelMemoryPolicies ?? []).filter(policy => policy.channelId === channel.id);
+  const channelAgents = agents;
+  useEffect(() => { if (!isDm) client.askChannelMemoryPolicies(channel.id); }, [channel.id, isDm]);
+  const pinnedIds = useMemo(() => new Set((world.channelPins?.entries ?? []).map(entry => entry.messageId)), [world.channelPins?.entries]);
+  const activePinCount = (world.channelPins?.entries ?? []).filter(entry => entry.state === "active").length;
 
   /* The same fact as the sidebar row, from the same one place, so the rail and
      the conversation can never disagree about whether anyone is home. */
@@ -5304,13 +7052,21 @@ function ChatView({
     setHeaderMenuOpen(false);
   }, [channel.name, roomAgent]);
 
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const chatStyle = {
+    "--cloud9-chat-scale": chatPrefs.fontSize === "small" ? "0.92" : chatPrefs.fontSize === "large" ? "1.12" : "1",
+    "--cloud9-avatar-scale": String(chatAvatarScale(chatPrefs.avatarSize)),
+  } as React.CSSProperties;
+
   return (
-    <div ref={roomRef} className="thread" aria-hidden={takeover ? "true" : undefined}>
+    <div ref={roomRef}
+      className={`thread chat-font-${chatPrefs.fontSize} chat-density-${chatPrefs.density} chat-time-${chatPrefs.timestamp} chat-avatar-${chatPrefs.avatarSize}`}
+      style={chatStyle} aria-hidden={takeover ? "true" : undefined}>
       {isDm ? (
         <header className="topbar dm-head chathead">
           {peerAgent
-            ? <AgentFace name={peerAgent.name} size={48} presence={dmPresence} hasPresence />
-            : <PersonFace name={peerName ?? "?"} size={48} />}
+            ? <AgentFace name={peerAgent.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 48)} presence={dmPresence} hasPresence />
+            : <PersonFace name={peerName ?? "?"} size={chatAvatarSizePx(chatPrefs.avatarSize, 48)} />}
           <div style={{ minWidth: 0 }}>
             <h2 className="ch-title"><span className="n">{peerName}</span></h2>
             <div className="role">
@@ -5319,7 +7075,10 @@ function ChatView({
             {/* A direct conversation with somebody else's agent is a direct
                 conversation with that somebody: they can read it. */}
             {peerAgent && <AgentOwnerTag agent={peerAgent} place="conversation" />}
+            <ChannelMemoryControl channel={channel} agents={peerAgent ? [peerAgent] : []}
+              policies={policyRows} canManage={false} viewerId={world.me?.id} compact />
           </div>
+          <WorkspaceLayoutControl layout={workspaceLayout} onChange={onWorkspaceLayout} selectRef={workspaceLayoutRef} />
           <div className="grow" />
           {peerAgent && (
             <span className="presencehere" data-presence={dmPresence?.presence ?? "unknown"}
@@ -5339,55 +7098,76 @@ function ChatView({
         </header>
       ) : (
         <header className="topbar chathead">
-          <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
-          <button className="chip header-members" aria-label="Show channel members and details"
-            aria-expanded={detailsOpen} onClick={onToggleDetails}>
-            <span aria-hidden="true">●</span>
-            {countOf(people.length + agents.length, "member", "members")}
-          </button>
-          <span className="sub">
-            {countOf(people.length, "person", "people")} ·{" "}
-            {countOf(agents.length, "agent")}
-          </span>
-          {/* Open or shut, said where the room is named. A room that anyone in
-              this Cloud9 can find and let themselves into is a different thing
-              from one you were put in, and that must never be a guess. */}
-          <RoomVisibility channel={channel} />
-          {channel.topic && (
-            <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
+          <div className="ch-identity">
+            <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
+            {channel.topic && (
+              <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
+            )}
+            <div className="ch-meta">
+              <button className="header-members" aria-label="Show channel members and details"
+                aria-expanded={detailsOpen} onClick={onToggleDetails}>
+                <span>
+                  {countOf(people.length, "human")} ·{" "}
+                  {countOf(agents.length, "agent")}
+                </span>
+              </button>
+              <span className="ch-meta-dot" aria-hidden="true">·</span>
+              <RoomVisibility channel={channel} />
+              <span className="ch-meta-dot" aria-hidden="true">·</span>
+              <ChannelMemoryControl channel={channel} agents={channelAgents}
+                policies={policyRows}
+                canManage={mayAdministerChannel(myRole) && !channel.archivedAt}
+                viewerId={world.me?.id} plain />
+            </div>
+          </div>
+          {activePinCount > 0 && (
+            <button className="chip header-pins" aria-label={`${countOf(activePinCount, "pinned message")}`}
+              title="Show pinned messages" aria-expanded={detailsOpen} onClick={onToggleDetails}>
+              📌 {activePinCount}
+            </button>
           )}
           <div className="grow" />
-          <div className="header-menu-wrap" ref={headerMenuRef}>
-            <button className="iconbtn header-overflow" aria-label="More channel actions"
-              aria-haspopup="menu" aria-expanded={headerMenuOpen}
-              onClick={() => setHeaderMenuOpen(open => !open)}>⋯</button>
-            {headerMenuOpen && (
-              <div className="header-menu" role="menu" aria-label="Channel actions">
-                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
-                {owner && !channel.archivedAt && <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
-                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
-                <button role="menuitem" onClick={copyChannelRef}>Copy channel name and ID</button>
-                {!channel.archivedAt && <button role="menuitem" onClick={prefillSummary}>Draft a channel summary request</button>}
-              </div>
-            )}
-          </div>
-          {/* Counts what is genuinely WAITING. An expired card is still drawn
-              below, but nothing is waiting on him for it any more. */}
+          <AgentTroubleChip agents={agents} world={world} onOpenTasks={onOpenTasks} />
           {waitingHere.length > 0 && (
             <button className="chip is-gold approvalpill" onClick={onOpenTasks}>
               <span className="dot wait" />
               {countOf(waitingHere.length, "approval")} waiting
             </button>
           )}
-          {!channel.archivedAt && <AddToChannel channel={channel} />}
-          {/* A QUIET ICON, not a furniture button (L3 — the Buzz-shaped header).
-              The words moved into the tip; the accessible name stays "Room
-              details", so every check and every screen reader finds it exactly
-              where it always was. */}
-          <button className="iconbtn roomdetailsbtn" aria-expanded={detailsOpen}
-            aria-label="Room details"
-            title="Room details — what this room is for, who is in it, and how it is run"
-            onClick={onToggleDetails}>ⓘ</button>
+          <ChannelContextSummary channel={channel} agents={agents} messages={all}
+            pins={world.channelPins} connected={world.connected}
+            onToggleDetails={onToggleDetails} detailsOpen={detailsOpen} />
+          <WorkspaceLayoutButtons layout={workspaceLayout} onChange={onWorkspaceLayout}
+            filesRef={workspaceLayoutRef as unknown as React.RefObject<HTMLButtonElement>} />
+          <div className="header-menu-wrap" ref={headerMenuRef}>
+            <button type="button" className="iconbtn header-overflow" aria-label="More channel actions"
+              title="More channel actions" aria-haspopup="menu" aria-expanded={headerMenuOpen}
+              aria-controls={`channel-menu-${channel.id}`} ref={headerOverflowRef}
+              onClick={() => setHeaderMenuOpen(open => !open)}
+              onKeyDown={e => {
+                if (e.key !== "ArrowDown" || headerMenuOpen) return;
+                e.preventDefault();
+                setHeaderMenuOpen(true);
+              }}>⋯</button>
+            {headerMenuOpen && (
+              <div id={`channel-menu-${channel.id}`} className="header-menu" role="menu"
+                aria-label="Channel actions" onKeyDown={handleMenuKeys}>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Members, agents, and pinned items</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Memory policy</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("focus"); }}>Focus chat</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("chat-files"); }}>Files</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("chat-diff"); }}>Diff</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("review"); }}>Review</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("incident"); }}>Incident</button>
+                {owner && !channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
+                {!channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Add people or agents</button>}
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
+                <button type="button" role="menuitem" onClick={copyChannelRef}>Copy channel name and ID</button>
+                {!channel.archivedAt && <button type="button" role="menuitem" onClick={prefillSummary}>Draft a channel summary request</button>}
+              </div>
+            )}
+          </div>
         </header>
       )}
 
@@ -5404,7 +7184,7 @@ function ChatView({
               ? countOf(messages.length, "message")
               : `${all.length} in this conversation`}
           </span>
-          <button className="find-x" aria-label="Close find" onClick={onCloseFind}>✕</button>
+          <button className="find-x" aria-label="Close find" title="Close find" onClick={onCloseFind}>✕</button>
         </div>
       )}
 
@@ -5481,10 +7261,17 @@ function ChatView({
               <div className="newline" role="separator"><span className="rule" /><span className="tag">New</span></div>
             )}
             <MessageRow m={r.m} cont={r.cont} ask={r.ask}
-              me={world.me} agents={world.agents} users={world.users}
+              me={world.me} agents={agents} users={world.users}
+              presence={world.presence}
+              delivery={r.m.authorKind === "human" && r.m.authorId === world.me?.id
+                ? world.messageStatuses[r.m.id] : undefined}
+              connected={world.connected}
               channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
+              task={taskByMessage.get(r.m.id)}
+              handoff={handoffByMessage.get(r.m.id)}
+              taskMutation={taskMutationByMessage.get(r.m.id)}
               agent={agentOf.get(r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
               /* Reading an archived room still works all the way down: the
@@ -5504,6 +7291,9 @@ function ChatView({
               threadSeen={openedThreads.has(r.m.id)}
               saved={world.savedMessages.some(entry => entry.messageId === r.m.id)}
               savedPending={world.savedPending.includes(r.m.id)}
+              pinned={pinnedIds.has(r.m.id)}
+              pinPending={world.channelPinPending.includes(r.m.id)}
+              canManagePins={canManagePins}
               litUp={litUp === r.m.id} />
           </React.Fragment>
         ))}
@@ -5515,35 +7305,6 @@ function ChatView({
             onOpenTasks={onOpenTasks} />
         ))}
 
-        {workingWithoutLiveSteps.map(a => (
-          <div className="msg" key={a.id}>
-            <AgentFace name={a.name} size={34} lamp="run" />
-            <div className="body">
-              <div className="who"><b>{a.name}</b><span className="badge">Agent</span><span className="t">now</span></div>
-              <div className="thinking">
-                <span className="bars" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-                <WorkingElapsed />
-                {/* ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
-                    THE STOP BUTTON, and it is here because this is the only place
-                    on the screen that says something is running. A control for
-                    stopping work that lives in a settings panel is a control
-                    nobody finds while the thing is running.
-
-                    IT TYPES THE SAME COMMAND HE COULD TYPE. "!stop" is the one
-                    owner of stopping in the engine, and this button sends exactly
-                    that message rather than inventing a second private route —
-                    so the button and the typed command can never mean different
-                    things, and stopping works identically from the phone. */}
-                <button className="btn small ghost stopnow" data-stop-agent={a.id}
-                  title={`Stop ${a.name} and spend nothing more on this`}
-                  onClick={() => client.send({
-                    type: "send", channelId: channel.id, text: `@${a.name} !stop`,
-                  })}>Stop</button>
-                {/* ===== GAP C BLOCK — end ===== */}
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
 
       {/**
@@ -5568,6 +7329,15 @@ function ChatView({
           </button>
         )}
       </div>
+
+      {humanTyping.length > 0 && (
+        <div className="typing-indicator" role="status" aria-live="polite">
+          <span className="typing-dots" aria-hidden="true">•••</span>{" "}
+          {humanTyping.length === 1
+            ? `${humanTyping[0].userName} is typing…`
+            : `${humanTyping.map(signal => signal.userName).join(", ")} are typing…`}
+        </div>
+      )}
 
       {/* In inline mode the conversation's own box is what carries a reply, so
           it says which message it is answering and offers a way out of it. */}
@@ -5650,9 +7420,113 @@ function actionHeadline(approval: Approval): string {
    has selected only a slice of the world can still ask it. */
 function useMyApprovals(
   approvals: Approval[], meId: ID | undefined,
-): { mine: Approval[]; waiting: Approval[] } {
+): { mine: Approval[]; involved: Approval[]; waiting: Approval[] } {
   const mine = approvals.filter(a => a.ownerId === meId);
-  return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a)) };
+  const involved = approvals.filter(a => a.ownerId === meId || a.requesterId === meId);
+  return { mine, involved, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a)) };
+}
+
+/** Inline, keyboard-friendly checkpoint controls. Edits/questions never decide. */
+function ApprovalCheckpointControls({ approval, midRun, dead, onOpenTasks }: {
+  approval: Approval; midRun: boolean; dead: boolean; onOpenTasks?: () => void;
+}): React.JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [questioning, setQuestioning] = useState(false);
+  const [instructions, setInstructions] = useState(approval.instructions ?? approval.action);
+  const [question, setQuestion] = useState("");
+  const revision = approval.revision ?? 0;
+  const epoch = approval.approvalEpoch;
+  const connected = client.world.connected;
+  const canDecide = approval.ownerId === client.world.me?.id;
+  const canAsk = canDecide || approval.requesterId === client.world.me?.id;
+  /* Arbitrary prose can safely replace only the durable title of a waiting
+     task. Plan/action/saving cards carry closed facts that the engine cannot
+     reinterpret from edited text, so do not offer a cosmetic Edit button for
+     them. The relay enforces the same allow-list for forged frames. */
+  const canReviseInstructions = (approval.kind === undefined || approval.kind === "task")
+    && !!approval.taskId;
+  const canEdit = canAsk && canReviseInstructions;
+  const legacyPending = approval.status === "pending"
+    && (!Number.isSafeInteger(approval.revision) || typeof approval.approvalEpoch !== "string"
+      || approval.approvalEpoch.length === 0);
+  useEffect(() => {
+    setInstructions(approval.instructions ?? approval.action);
+    setQuestion("");
+    setEditing(false);
+    setQuestioning(false);
+  }, [approval.id, approval.revision, approval.instructions, approval.action]);
+  const checkpoint = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    approvalId: approval.id, expectedRevision: revision,
+    ...(epoch ? { approvalEpoch: epoch } : {}),
+    requestId: `approval-${approval.id}-${revision}-${Date.now().toString(36)}`,
+    ...extra,
+  });
+  if (dead) {
+    return <>
+      <span className="expiredline" data-expired={approval.id}>This checkpoint is closed; nothing happened.</span>
+      {!midRun && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </>;
+  }
+  if (legacyPending) {
+    return <>
+      <span className="eyebrow approval-legacy" role="status" aria-live="polite">
+        This approval is from an older Cloud9 session and cannot be answered here. Refresh Cloud9 to load a current checkpoint.
+      </span>
+      {!midRun && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </>;
+  }
+  if (!canDecide && !canAsk) {
+    return <span className="eyebrow">Waiting for the approval owner</span>;
+  }
+  return <div className="approval-checkpoint" data-checkpoint={approval.id}>
+    <div className="actions" role="group" aria-label="Approval checkpoint actions">
+      {canDecide && <>
+        <button className="gold" type="button" disabled={!connected}
+          onClick={() => client.send({ type: "decideApproval", decision: "approved", ...checkpoint() } as ClientFrame)}>
+          Approve
+        </button>
+        <button className={midRun ? "btn" : "btn danger"} type="button" disabled={!connected}
+          onClick={() => client.send({ type: "decideApproval", decision: "rejected", ...checkpoint() } as ClientFrame)}>
+          {midRun ? "Not now" : "Reject"}
+        </button>
+      </>}
+      {canEdit && <button className="btn ghost small" type="button" disabled={!connected}
+        aria-expanded={editing} onClick={() => { setEditing(v => !v); setQuestioning(false); }}>
+        Edit instructions
+      </button>}
+      {canAsk && <button className="btn ghost small" type="button" disabled={!connected}
+        aria-expanded={questioning} onClick={() => { setQuestioning(v => !v); setEditing(false); }}>
+        Ask a question
+      </button>}
+      {approval.taskId && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </div>
+    {editing && <form className="approval-edit" onSubmit={event => {
+      event.preventDefault();
+      if (!instructions.trim() || !connected) return;
+      client.send({ type: "editApproval", instructions, ...checkpoint() } as ClientFrame);
+      setEditing(false);
+    }}>
+      <label htmlFor={`approval-instructions-${approval.id}`}>Revised instructions</label>
+      <textarea id={`approval-instructions-${approval.id}`} value={instructions} maxLength={4000}
+        onChange={event => setInstructions(event.target.value)} rows={4} />
+      <button className="btn small" type="submit" disabled={!connected || !instructions.trim()}>Save revision</button>
+      <span className="eyebrow">Saving creates a new checkpoint; it will not run until you approve it.</span>
+    </form>}
+    {questioning && <form className="approval-edit" onSubmit={event => {
+      event.preventDefault();
+      if (!question.trim() || !connected) return;
+      client.send({ type: "askApprovalQuestion", question, ...checkpoint() } as ClientFrame);
+      setQuestion("");
+      setQuestioning(false);
+    }}>
+      <label htmlFor={`approval-question-${approval.id}`}>Question for the approval thread</label>
+      <textarea id={`approval-question-${approval.id}`} value={question} maxLength={1000}
+        onChange={event => setQuestion(event.target.value)} rows={3} />
+      <button className="btn small" type="submit" disabled={!connected || !question.trim()}>Send question</button>
+      <span className="eyebrow">This is recorded on the checkpoint; it does not produce provider output.</span>
+    </form>}
+    {!connected && <span className="eyebrow" role="status">Cloud9 is reconnecting; actions are paused.</span>}
+  </div>;
 }
 
 /** The moment an agent stops and asks — the prototype's permission card. */
@@ -5765,6 +7639,14 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               {saving && approval.saving?.because && (
                 <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
               )}
+              {approval.instructions && approval.instructions !== approval.action && (
+                <pre className="planbody" data-instructions={approval.id}>{approval.instructions}</pre>
+              )}
+              {approval.clarifications?.map(item => (
+                <p className="planbody" data-clarification={item.id} key={item.id}>
+                  Question: {item.text}
+                </p>
+              ))}
               <span className="per">
                 {dead ? "nothing happened"
                   : saving ? "nothing changes until you say so — and you can undo it any time"
@@ -5772,29 +7654,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               </span>
             </div>
           }
-          actions={dead ? (
-            <>
-              <span className="expiredline" data-expired={approval.id}>
-                Nobody answered in time — it didn't happen. Ask again and the agent will
-                stop here once more.
-              </span>
-              {!midRun && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
-            </>
-          ) : (
-            <>
-              <button className="gold"
-                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
-                Approve
-              </button>
-              <button className={midRun ? "btn" : "btn danger"}
-                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-                {midRun ? "Not now" : "Reject"}
-              </button>
-              {/* Only a job-shaped approval HAS a job to look at. */}
-              {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
-              <span className="eyebrow">Nothing has been changed yet</span>
-            </>
-          )}
+          actions={<ApprovalCheckpointControls approval={approval} midRun={midRun} dead={dead} onOpenTasks={onOpenTasks} />}
         />
       </div>
     </div>
@@ -5855,27 +7715,17 @@ function ApprovalTray({ approval, agent, task }: {
       {saving && approval.saving?.because && (
         <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
       )}
-      {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
-      {dead ? (
-        <p className="expiredline" data-expired={approval.id}>
-          Nobody answered in time — it didn't happen.
-        </p>
-      ) : (
-        <div className="actions">
-          <button className="gold small"
-            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>Approve</button>
-          <button className={midRun ? "btn small" : "btn small danger"}
-            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-            {midRun ? "Not now" : "Reject"}
-          </button>
-        </div>
+      {approval.instructions && approval.instructions !== approval.action && (
+        <pre className="planbody" data-instructions={approval.id}>{approval.instructions}</pre>
       )}
+      {approval.clarifications?.map(item => (
+        <p className="planbody" data-clarification={item.id} key={item.id}>Question: {item.text}</p>
+      ))}
+      {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
+      <ApprovalCheckpointControls approval={approval} midRun={midRun} dead={dead} />
     </div>
   );
 }
-
-/** The six emoji offered on hover. The full set is still in the composer. */
-const REACT_EMOJI = ["👍", "🎉", "🙏", "👀", "✅", "❤️"];
 
 /* ---- the files that rode along with a message ----
  *
@@ -6089,6 +7939,14 @@ function ArtifactCard({ artifactId, version, place = "chat", historyOpen = false
             {fileSize(shown.size)} · {shown.text ? "text" : "a file to save"}
             {" · "}{dayStamp(shown.producedAt)} {clock(shown.producedAt)}
           </span>
+          {place === "workspace" && (
+            <span className="meta artpin"
+              data-file-pin={version !== undefined && shown.version !== newest.version ? "exact" : "newest"}>
+              {version !== undefined && shown.version !== newest.version
+                ? `Exact version ${shown.version} · newest is version ${newest.version}`
+                : shown.version > 1 ? `Newest · version ${shown.version}` : "Newest"}
+            </span>
+          )}
         </span>
         <span className="act">
           {held?.state === "opening" ? (
@@ -6187,6 +8045,14 @@ function ArtifactCard({ artifactId, version, place = "chat", historyOpen = false
       {/* THE JOIN THE ATTRIBUTION EXISTS FOR: the turn that produced these bytes.
           Drawn only when the version names one — never a button that would ask
           about a run nobody recorded. */}
+      {shown.taskId && (
+        <p className="arttask" data-related-task={shown.taskId}>
+          <span className="arttask-label">Related task</span>
+          <span className="arttask-name">
+            {world.tasks.find(t => t.id === shown.taskId)?.title ?? "A delegated job"}
+          </span>
+        </p>
+      )}
       {shown.runId && (
         <>
           <button className="runmore artrun" aria-expanded={showRun} data-run={shown.runId}
@@ -6222,6 +8088,43 @@ function MessageArtifacts({ text }: { text: string }): React.JSX.Element | null 
   );
 }
 
+/** Compact metadata only; every field here came from a successful relay gate. */
+function RichLinkPreviewCards({ previews }: { previews: RichLinkPreview[] }): React.JSX.Element | null {
+  const visible = previews.filter(preview => preview.ref.kind !== "artifact");
+  if (visible.length === 0) return null;
+  const labelFor = (preview: RichLinkPreview): string => {
+    if (preview.ref.kind === "projectItem") return preview.ref.itemKind === "pull" ? "Pull request" : "Issue";
+    if (preview.ref.kind === "task") return "Task";
+    if (preview.ref.kind === "run") return "Run";
+    if (preview.ref.kind === "decision") return "Decision";
+    return "Linked item";
+  };
+  return (
+    <div className="rich-link-previews" aria-label="Linked Cloud9 items">
+      {visible.map(preview => (
+        <article className="rich-link-preview" key={`${preview.ref.kind}:${preview.ref.kind === "projectItem" ? `${preview.ref.projectId}:${preview.ref.itemKind}:${preview.ref.number}` : preview.ref.id}`}
+          data-rich-kind={labelFor(preview).toLowerCase().replace(/\s+/g, "-")}
+          data-rich-state={preview.status ?? undefined}>
+          <span className="rich-link-type">{labelFor(preview)}</span>
+          <strong className="rich-link-title">{preview.title}</strong>
+          {(preview.status || preview.owner) && (
+            <span className="rich-link-meta">
+              {preview.status && <span>{preview.status}</span>}
+              {preview.status && preview.owner && <span aria-hidden="true"> Â· </span>}
+              {preview.owner && <span>{preview.owner}</span>}
+            </span>
+          )}
+          {preview.sourceUrl && (
+            <a className="rich-link-open" href={preview.sourceUrl} target="_blank" rel="noreferrer">
+              Open source
+            </a>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
 /**
  * THE WORDS WITHOUT THE REFERENCE.
  *
@@ -6248,9 +8151,9 @@ const withoutArtifactRefs = (text: string): string =>
  * the switches that are true everywhere (the master switch and quiet hours).
  *
  * IT IS NOT A SECOND GATE. The mute list is a prefs field the shared
- * `decideNotification` reads (`isRoomMuted`, packages/shared/src/notify.ts);
- * this panel only writes it, through `withRoomMuted`, so a room can never end
- * up in the list twice and this screen never re-decides anything.
+ * `decideNotification` reads the explicit per-room mode (and the legacy
+ * `isRoomMuted` list), packages/shared/src/notify.ts; this panel writes through
+ * the shared mode helper, so a room can never end up with conflicting rows.
  *
  * What it says on screen is the whole truth: muting silences this room EXCEPT
  * somebody mentioning him by name, and if notifications are off everywhere it
@@ -6258,18 +8161,19 @@ const withoutArtifactRefs = (text: string): string =>
  */
 function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): React.JSX.Element {
   const p = usePrefs();
-  const muted = isRoomMuted(p, channel.id);
+  const mode = channelNotificationModeFor(p, channel.id);
+  const muted = mode !== "all";
   const what = isRoom ? "room" : "conversation";
   const toggle = (): void => {
-    prefs.set({
-      mutedChannelIds: withRoomMuted(prefs.get(), channel.id, !muted).mutedChannelIds,
-    });
+    prefs.set(withChannelNotificationMode(prefs.get(), channel.id, muted ? "all" : "mentions"));
   };
   return (
     <div className="aside-sec roommute" data-muted={muted ? "yes" : "no"}>
       <span className="eyebrow">Notifications</span>
       <p className="roommute-state">
-        {muted
+        {mode === "off"
+          ? `Off. Nothing from this ${what} interrupts you.`
+          : muted
           ? `Muted. Nothing from this ${what} interrupts you — except somebody mentioning you by name.`
           : `On. This ${what} can interrupt you, as your notification settings allow.`}
       </p>
@@ -6295,6 +8199,141 @@ function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): R
  * a week later without scrolling for it. Asked when the panel opens, and every
  * `artifact` frame that lands afterwards replaces the row with the same id.
  */
+
+const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
+const CANVAS_BLOCK_KIND_LABEL: Record<CanvasBlockKind, string> = {
+  markdown: "Note",
+  architecture: "Architecture",
+  requirements: "Requirements",
+  decision: "Decision",
+  link: "Link",
+  task: "Task",
+  run: "Run",
+  pullRequest: "Pull request",
+  artifact: "Artifact",
+};
+
+function canvasBlockKindLabel(kind: CanvasBlockKind): string {
+  return CANVAS_BLOCK_KIND_LABEL[kind] ?? kind;
+}
+
+function canvasLinkKindLabel(kind: CanvasLinkKind): string {
+  if (kind === "pullRequest") return "Pull request";
+  if (kind === "artifact") return "Artifact";
+  if (kind === "task") return "Task";
+  return "Run";
+}
+
+function studioPersonName(id: ID, users: User[], agents: AgentDef[]): string | undefined {
+  return users.find(user => user.id === id)?.name ?? agents.find(agent => agent.id === id)?.name;
+}
+
+function canvasActorName(
+  id: ID, kind: "human" | "agent", users: User[], agents: AgentDef[], stored?: string,
+): string | undefined {
+  const named = stored?.trim();
+  if (named) return named;
+  return studioPersonName(id, users, agents);
+}
+
+function liveCanvasBlocks(canvas: EngineeringCanvasView): CanvasBlock[] {
+  return canvas.blocks.filter(block => !block.deletedAt);
+}
+
+function canvasFocusKind(canvas: EngineeringCanvasView): CanvasBlockKind | undefined {
+  const live = liveCanvasBlocks(canvas);
+  if (live.length === 0) return undefined;
+  const counts = new Map<CanvasBlockKind, number>();
+  for (const block of live) counts.set(block.kind, (counts.get(block.kind) ?? 0) + 1);
+  let best: CanvasBlockKind | undefined;
+  let bestCount = 0;
+  for (const block of live) {
+    const n = counts.get(block.kind) ?? 0;
+    if (n > bestCount) {
+      best = block.kind;
+      bestCount = n;
+    }
+  }
+  return best;
+}
+
+function canvasLastUpdatedBy(canvas: EngineeringCanvasView, users: User[], agents: AgentDef[]): string | undefined {
+  if (canvas.blocks.length === 0) return undefined;
+  const latest = canvas.blocks.reduce((a, b) => a.updatedAt >= b.updatedAt ? a : b);
+  return canvasActorName(latest.authorId, latest.authorKind, users, agents, latest.authorName);
+}
+
+function canvasVersionLine(canvas: EngineeringCanvasView, users: User[], agents: AgentDef[]): string {
+  const kind = canvasFocusKind(canvas);
+  const version = `v${canvas.revision}`;
+  const head = kind ? `${canvasBlockKindLabel(kind)} · ${version}` : version;
+  const lastBy = canvasLastUpdatedBy(canvas, users, agents);
+  return lastBy ? `${head} · Last updated by ${lastBy}` : head;
+}
+
+function canvasHistorySummary(summary: string): string {
+  if (summary === "created canvas") return "Created";
+  if (summary === "renamed canvas") return "Renamed";
+  if (summary === "edited canvas block") return "Edited";
+  if (summary === "tombstoned canvas block") return "Removed";
+  const added = /^added ([a-zA-Z]+) block$/.exec(summary);
+  if (added && added[1] in CANVAS_BLOCK_KIND_LABEL) {
+    return `Added ${canvasBlockKindLabel(added[1] as CanvasBlockKind)}`;
+  }
+  return summary;
+}
+
+function pollChosenLabel(poll: ProjectPollView): string | undefined {
+  if (!poll.myOptionId) return undefined;
+  return poll.options.find(option => option.id === poll.myOptionId)?.label;
+}
+
+function CopyTechnicalId({ value }: { value: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button type="button" className="btn canvas-copy-id" onClick={() => {
+      void navigator.clipboard?.writeText(value).then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1600);
+      });
+    }}>{copied ? "Copied" : "Copy id"}</button>
+  );
+}
+
+function RoomCanvases({ channel, onOpen }: { channel: Channel; onOpen: (projectId?: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const visible = channel.memberIds.includes(world.me?.id ?? "") || channel.memberIds.some(id =>
+    world.agents.some(agent => agent.id === id && agent.ownerId === world.me?.id));
+  useEffect(() => {
+    if (visible && world.connected && !world.projects.asked) client.askProjects();
+  }, [channel.id, visible, world.connected, world.projects.asked]);
+  const project = visible ? world.projects.list.find(candidate => candidate.channelId === channel.id) : undefined;
+  useEffect(() => {
+    if (project?.id && world.connected && world.canvases.projectId !== project.id) client.askCanvases(project.id);
+  }, [project?.id, world.connected, world.canvases.projectId]);
+  const canvases = world.canvases.projectId === project?.id ? world.canvases.list : [];
+  const canvasAsked = world.canvases.projectId === project?.id && world.canvases.asked;
+  return (
+    <div className="aside-sec roomcanvases" data-canvas-channel={channel.id}>
+      <div className="roomcanvases-head"><span className="eyebrow">Canvas</span>
+        {project && <button type="button" className="linkish" onClick={() => onOpen(project.id)}>Open Canvas</button>}
+      </div>
+      {!visible && <p className="sec-note">This room is no longer available to you.</p>}
+      {visible && !world.projects.asked && <p className="sec-note" role="status">Looking for a linked Canvas…</p>}
+      {visible && world.projects.asked && !project && <p className="sec-note">No durable Canvas is linked to this room yet.</p>}
+      {visible && project && !canvasAsked && <p className="sec-note" role="status">Loading Canvas context…</p>}
+      {visible && project && canvasAsked && canvases.length === 0 && <p className="sec-note">No Canvas has been created for {project.name}.</p>}
+      {canvases.length > 0 && <div className="roomcanvas-list" aria-label="Room canvases">
+        {canvases.slice(0, 3).map(canvas => <button key={canvas.id} type="button" className="roomcanvas-row" onClick={() => onOpen(project?.id)}>
+          <span><strong>{canvas.title}</strong><small>{canvasVersionLine(canvas, world.users, world.agents)}</small></span>
+          {canvas.unread && <span className="badge" aria-label="unread Canvas updates">New</span>}
+        </button>)}
+      </div>}
+      {visible && project && <p className="sec-note roomcanvas-note">View-only summary. Edit durable Canvas content in Canvas.</p>}
+    </div>
+  );
+}
+
 function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
   useSyncExternalStore(client.subscribe, client.getSnapshot);
   useEffect(() => { client.askArtifacts(channel.id); }, [channel.id]);
@@ -6344,10 +8383,142 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
  * hand it a fresh object or a fresh arrow function per render and every bubble
  * is back to redrawing on every frame, silently.
  */
+/**
+ * Delivery is an author-only fact.  The relay deliberately sends aggregate
+ * counts for rooms and recipient detail only for a direct human conversation;
+ * this renderer therefore speaks only the stage and (where useful) the
+ * aggregate count, never a recipient identity.  An absent status is the
+ * optimistic local state while the acknowledgement is in flight.
+ */
+function DeliveryStatus({ status }: { status?: MessageStatus }): React.JSX.Element {
+  const stage = status?.stage;
+  const label = stage === "accepted" ? "Sent"
+    : stage === "delivered" ? "Delivered"
+      : stage === "read" ? "Read"
+        : stage === "unknown" ? "Unknown"
+          : stage === "failed" ? "Failed"
+          : "Sending";
+  const count = stage === "delivered" ? status?.deliveredCount
+    : stage === "read" ? status?.readCount
+      : undefined;
+  const suffix = count !== undefined && count > 0
+    ? ` by ${count} ${count === 1 ? "person" : "people"}`
+    : "";
+  const spoken = `${label}${suffix}`;
+  return (
+    <span className="message-delivery-status" role="status" aria-label={`Message status: ${spoken}`}
+      data-delivery-stage={stage ?? "sending"}>
+      {spoken}
+    </span>
+  );
+}
+
+interface HandOffCandidate {
+  agent: AgentDef;
+  permission: string;
+  capabilities: string;
+  availability: string;
+  availabilityTitle: string;
+  allowed: boolean;
+  disabledReason?: string;
+}
+
+/** Facts shown before a human hands a real source message to a room agent. */
+function handOffCandidates(
+  agents: readonly AgentDef[], users: readonly User[], me: User | undefined,
+  presence: Record<ID, AgentPresenceState>,
+): HandOffCandidate[] {
+  const ownerName = (id: ID): string => users.find(user => user.id === id)?.name ?? "the owner";
+  return agents.map(agent => {
+    const p = presence[agent.id];
+    const permission = respondWords(agent, ownerName(agent.ownerId));
+    const enabled = Object.entries(effectiveAbilities(agent))
+      .filter(([, on]) => on === true)
+      .map(([key]) => CAPABILITIES.find(capability => capability.ability === key)?.label ?? key);
+    const capabilities = enabled.length > 0 ? enabled.join(" · ") : "None enabled";
+    const availability = p
+      ? `${PRESENCE_WORDS[p.presence]} · ${p.reason}`
+      : "Not reported by the agent engine";
+    const lifecycleBlocked = agent.lifecycle === "paused"
+      ? "Paused by the owner"
+      : agent.lifecycle === "disabled" ? "Switched off by the owner" : undefined;
+    const permissionAllowed = !!me && mayDriveAgent(me.id, agent);
+    const disabledReason = !permissionAllowed
+      ? "You are not allowed to hand work to this agent"
+      : lifecycleBlocked;
+    return {
+      agent, permission, capabilities, availability,
+      availabilityTitle: p ? `${availability} · Status: ${p.status}` : availability,
+      allowed: permissionAllowed && !lifecycleBlocked,
+      ...(disabledReason ? { disabledReason } : {}),
+    };
+  });
+}
+
+type MessageRowProps = {
+  m: Message;
+  cont?: boolean;
+  ask?: Message;
+  me?: User;
+  agents: AgentDef[];
+  users: User[];
+  presence?: Record<ID, AgentPresenceState>;
+  answered?: Message;
+  doneRunId?: string;
+  task?: Task;
+  taskMutation?: World["taskMutations"][ID];
+  agent?: AgentDef; working?: boolean;
+  newSince?: ReadCursor;
+  threadSeen?: boolean;
+  onOpenThread?: (rootId: ID) => void;
+  onInlineReply?: (messageId: ID) => void;
+  onGoToMessage?: (messageId: ID) => void;
+  inOpenThread?: boolean;
+  saved?: boolean;
+  savedPending?: boolean;
+  pinned?: boolean;
+  pinPending?: boolean;
+  canManagePins?: boolean;
+  delivery?: MessageStatus;
+  connected?: boolean;
+  handoff?: HandoffRequestState;
+  channelId?: ID;
+  litUp?: boolean;
+  variant?: "channel" | "thread";
+  archived?: boolean;
+};
+
+/* Presence is global, but each row only reads entries for agents in its room.
+   A heartbeat for an agent in another room must not invalidate every bubble. */
+function sameMessageRowPresence(a: MessageRowProps, b: MessageRowProps): boolean {
+  if (a.presence === b.presence) return true;
+  const ids = new Set([...a.agents, ...b.agents].map(agent => agent.id));
+  for (const id of ids) {
+    const left = a.presence?.[id];
+    const right = b.presence?.[id];
+    if (left?.agentId !== right?.agentId || left?.status !== right?.status
+      || left?.presence !== right?.presence || left?.reason !== right?.reason) return false;
+  }
+  return true;
+}
+
+const MESSAGE_ROW_PROP_KEYS: readonly (keyof MessageRowProps)[] = [
+  "m", "cont", "ask", "me", "agents", "users", "answered", "doneRunId", "task", "taskMutation",
+  "agent", "working", "onOpenThread", "onInlineReply", "onGoToMessage", "inOpenThread", "litUp",
+  "variant", "archived", "newSince", "threadSeen", "saved", "savedPending", "channelId", "pinned",
+  "pinPending", "canManagePins", "delivery", "connected", "handoff",
+];
+
+function areMessageRowPropsEqual(a: MessageRowProps, b: MessageRowProps): boolean {
+  if (!sameMessageRowPresence(a, b)) return false;
+  return MESSAGE_ROW_PROP_KEYS.every(key => Object.is(a[key], b[key]));
+}
+
 const MessageRow = React.memo(function MessageRow({
-  m, cont, ask, me, agents, users, answered, doneRunId,
+  m, cont, ask, me, agents, users, presence, answered, doneRunId, task, taskMutation,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
+  pinned, pinPending, canManagePins, delivery, connected, handoff,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -6359,6 +8530,7 @@ const MessageRow = React.memo(function MessageRow({
   me?: User;
   agents: AgentDef[];
   users: User[];
+  presence?: Record<ID, AgentPresenceState>;
   /**
    * The message this one answers, already looked up by the parent out of the
    * WHOLE conversation (a thread reply's parent is often not on screen).
@@ -6366,10 +8538,14 @@ const MessageRow = React.memo(function MessageRow({
   answered?: Message;
   /** the finished job behind a "📦 Task done" message, matched by the parent */
   doneRunId?: string;
+  /** a background task joined to this exact asking message */
+  task?: Task;
+  /** latest correlated message-to-task mutation for this source message */
+  taskMutation?: World["taskMutations"][ID];
   agent?: AgentDef; working?: boolean;
   /** the read marker this conversation was opened on — 0/absent means "unknown,
    *  so claim nothing". Only used to say whether a thread has moved since. */
-  newSince?: number;
+  newSince?: ReadCursor;
   /** he has already opened this message's thread in this visit */
   threadSeen?: boolean;
   /** threads are on: replying opens one, and the reply count opens it again */
@@ -6381,6 +8557,15 @@ const MessageRow = React.memo(function MessageRow({
   inOpenThread?: boolean;
   saved?: boolean;
   savedPending?: boolean;
+  pinned?: boolean;
+  pinPending?: boolean;
+  canManagePins?: boolean;
+  /** author-only human delivery state; groups contain counts, never identities */
+  delivery?: MessageStatus;
+  /** relay-reported availability facts used by the handoff chooser */
+  connected?: boolean;
+  /** correlated relay lifecycle for the source message's latest handoff */
+  handoff?: HandoffRequestState;
   channelId?: ID;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
@@ -6389,18 +8574,60 @@ const MessageRow = React.memo(function MessageRow({
   archived?: boolean;
 }): React.JSX.Element {
   countRender("MessageRow");
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const avatarPx = chatAvatarSizePx(chatPrefs.avatarSize);
   const isAgent = m.authorKind === "agent";
   const [copied, setCopied] = useState(false);
   const [pickEmoji, setPickEmoji] = useState(false);
+  const [reactionQuery, setReactionQuery] = useState("");
+  const [reactionCategory, setReactionCategory] = useState("Quick");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.text);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [handOpen, setHandOpen] = useState(false);
+  const [handTarget, setHandTarget] = useState<ID>();
+  const recentEmojis = useRecentEmojis(me?.id);
+  const pendingReactionRef = useRef<Set<string>>(new Set());
+  const [turnTaskOpen, setTurnTaskOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [taskTitle, setTaskTitle] = useState(m.text);
+  const [taskAgentId, setTaskAgentId] = useState(agents[0]?.id ?? "");
+  const [taskDeadline, setTaskDeadline] = useState("");
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
   /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
   const reactHoldRef = useRef<HTMLSpanElement>(null);
+  const handHoldRef = useRef<HTMLSpanElement>(null);
+  const handButtonRef = useRef<HTMLButtonElement>(null);
+  const moreHoldRef = useRef<HTMLSpanElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const taskTitleRef = useRef<HTMLTextAreaElement>(null);
+  const closeHand = useCallback(() => {
+    setHandOpen(false);
+    queueMicrotask(() => handButtonRef.current?.focus());
+  }, []);
+  const closeMore = useCallback(() => {
+    setMoreOpen(false);
+    queueMicrotask(() => moreButtonRef.current?.focus());
+  }, []);
+  const closeTask = useCallback(() => {
+    setTurnTaskOpen(false);
+  }, []);
   useEscapeCloses(() => setPickEmoji(false), pickEmoji);
   useClickAwayCloses(reactHoldRef, () => setPickEmoji(false), pickEmoji);
+  useEscapeCloses(closeHand, handOpen);
+  useClickAwayCloses(handHoldRef, closeHand, handOpen);
+  useEscapeCloses(closeMore, moreOpen && !handOpen && !turnTaskOpen);
+  useClickAwayCloses(moreHoldRef, () => setMoreOpen(false), moreOpen && !handOpen && !turnTaskOpen);
+  useEscapeCloses(closeTask, turnTaskOpen);
+  useEffect(() => {
+    if (turnTaskOpen) taskTitleRef.current?.focus();
+  }, [turnTaskOpen]);
+  useEffect(() => {
+    if (!moreOpen || handOpen || turnTaskOpen) return;
+    const frame = requestAnimationFrame(() => focusFirstMenuItem(moreHoldRef.current));
+    return () => cancelAnimationFrame(frame);
+  }, [moreOpen, handOpen, turnTaskOpen]);
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -6420,6 +8647,39 @@ const MessageRow = React.memo(function MessageRow({
     ? agents.find(a => a.id === m.authorId)?.ownerId === me.id
     : m.authorId === me.id);
 
+  const handCandidates = useMemo(
+    () => handOffCandidates(agents, users, me, presence ?? {}),
+    [agents, users, me, presence],
+  );
+  const handAllowed = handCandidates.some(candidate => candidate.allowed);
+  const handTask = task?.sourceMessageId === m.id ? task : undefined;
+  const handTargetCandidate = handCandidates.find(candidate => candidate.agent.id === handTarget);
+  const handRequestPending = handoff?.state === "pending" && !handTask;
+  const handSourceThreadId = m.replyTo ?? m.id;
+
+  useEffect(() => {
+    if (handOpen && !handTargetCandidate) {
+      setHandTarget(handCandidates.find(candidate => candidate.allowed)?.agent.id);
+    }
+  }, [handOpen, handTargetCandidate, handCandidates]);
+
+  const handOff = (): void => {
+    const target = handCandidates.find(candidate => candidate.agent.id === handTarget);
+    if (!target?.allowed || !me || !connected) return;
+    const title = m.text.trim().slice(0, 2000);
+    if (!title) return;
+    client.createHandoff({
+      type: "createTask", agentId: target.agent.id, channelId: channelId!, title,
+      sourceMessageId: m.id, sourceThreadId: handSourceThreadId,
+    });
+  };
+  const taskCandidates = me ? agents.filter(candidate => mayDriveAgent(me.id, candidate)) : [];
+  const availableTaskAgents = taskCandidates.filter(candidate => {
+    if (candidate.lifecycle === "paused" || candidate.lifecycle === "disabled") return false;
+    const state = presence?.[candidate.id]?.presence;
+    return state !== "paused" && state !== "offline";
+  });
+
   const nameFor = (id: ID): string =>
     id === me?.id ? "You"
       : users.find(u => u.id === id)?.name
@@ -6427,9 +8687,44 @@ const MessageRow = React.memo(function MessageRow({
       ?? "Someone";
 
   const react = (emoji: string, on: boolean) => {
-    client.send({ type: "react", messageId: m.id, emoji, on });
+    const sent = client.send({ type: "react", messageId: m.id, emoji, on });
+    if (on && sent !== undefined) {
+      const key = `${m.id}\u0000${emoji}`;
+      pendingReactionRef.current.add(key);
+      setTimeout(() => pendingReactionRef.current.delete(key), 15_000);
+    }
     setPickEmoji(false);
   };
+
+  /* The reaction frame is the hub's authoritative success signal. A click or
+     transport send alone is not enough: refusals and disconnects must never
+     teach the picker a choice that did not land. */
+  useEffect(() => {
+    if (!me) return;
+    for (const key of pendingReactionRef.current) {
+      const [messageId, emoji] = key.split("\u0000");
+      if (messageId !== m.id) continue;
+      const landed = (m.reactions ?? []).some(r => r.emoji === emoji && r.userIds.includes(me.id));
+      if (!landed) continue;
+      rememberRecentEmoji(me.id, emoji);
+      pendingReactionRef.current.delete(key);
+    }
+  }, [m.id, m.reactions, me]);
+
+  const submitTask = (): void => {
+    if (!channelId || !taskAgentId || !taskTitle.trim()
+      || !availableTaskAgents.some(candidate => candidate.id === taskAgentId)) return;
+    const deadlineAt = taskDeadline ? new Date(taskDeadline).getTime() : undefined;
+    client.createTaskFromMessage({
+      agentId: taskAgentId, channelId: channelId!, title: taskTitle,
+      sourceMessageId: m.id, sourceThreadId: m.replyTo ?? m.id, deadlineAt,
+    });
+    /* The store owns this correlated lifecycle. Deriving the card from its
+       source-message mutation means a reconnect/welcome cannot leave a local
+       request id pretending that creation is still pending. */
+  };
+
+  const taskState = taskMutation?.state;
 
   const saveEdit = () => {
     const next = draft.trim();
@@ -6469,6 +8764,10 @@ const MessageRow = React.memo(function MessageRow({
   ));
 
   const reactions = (m.reactions ?? []).filter(r => r.userIds.length > 0);
+  const reactionCatalog = useMemo(() => emojiCatalogFor(recentEmojis), [recentEmojis]);
+  const reactionRows = useMemo(
+    () => emojiRowsFor(reactionCatalog, reactionCategory, reactionQuery),
+    [reactionCatalog, reactionCategory, reactionQuery]);
   const reactionRow = (!deleted && reactions.length > 0) && (
     <div className="reactions">
       {reactions.map(r => {
@@ -6543,7 +8842,8 @@ const MessageRow = React.memo(function MessageRow({
    * the report; this deliberately stops at what the client can know.
    */
   const threadMoved = !inThread && !deleted && replyCount > 0
-    && !threadSeen && !!newSince && (m.lastReplyAt ?? 0) > newSince;
+    && !threadSeen && !!newSince && !!m.lastReplyAt
+    && afterCursor({ ts: m.lastReplyAt!, id: m.lastReplyId ?? "" }, newSince);
   /* WHO IS IN THE THREAD, before the number (F2 — Buzz stacks the repliers'
      faces beside "23 replies", and who is in there is what makes him open it).
      The hub keeps the three newest speakers on the root (`replyFaces`); the
@@ -6570,8 +8870,8 @@ const MessageRow = React.memo(function MessageRow({
         <span className="tl-faces" aria-hidden="true">
           {threadFaces.map(f => (
             f.kind === "agent"
-              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={18} /></span>
-              : <PersonFace key={f.id} name={f.name} size={18} />
+              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 18)} /></span>
+              : <PersonFace key={f.id} name={f.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 18)} />
           ))}
         </span>
       )}
@@ -6596,7 +8896,41 @@ const MessageRow = React.memo(function MessageRow({
      beside the card that replaces it. Nothing else reads `drawn`: copying,
      editing and searching all still see the real message. */
   const artifactRefs = useMemo(() => findArtifactRefs(m.text), [m.text]);
-  const drawn = artifactRefs.length > 0 ? withoutArtifactRefs(m.text) : m.text;
+  const richRefs = useMemo(() => findRichLinkRefs(m.text), [m.text]);
+  const richState = useWorld(w => w.richLinkPreviews[m.id]);
+  const richPreviews = richState?.previews ?? [];
+  useEffect(() => {
+    if (deleted || richRefs.length === 0) {
+      client.clearRichLinkPreviews(m.id);
+      return;
+    }
+    client.askRichLinkPreviews(m.id, richRefs);
+  }, [deleted, m.id, richRefs]);
+  const drawn = useMemo(() => {
+    let next = artifactRefs.length > 0 ? withoutArtifactRefs(m.text) : m.text;
+    for (const preview of richPreviews) {
+      const token = preview.sourceUrl ?? richLinkToken(preview.ref);
+      if (!token) continue;
+      next = next.split(token).join("");
+    }
+    return next.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }, [artifactRefs.length, m.text, richPreviews]);
+
+  const taskAction = !deleted && !task && !isAgent && mine && !archived && channelId && availableTaskAgents.length > 0 ? (
+    <button type="button" role="menuitem" className="task-action" title="Turn this message into a task"
+      aria-haspopup="dialog" onClick={() => {
+        setTaskTitle(m.text); setTaskAgentId(availableTaskAgents[0]?.id ?? ""); setTaskDeadline("");
+        setTurnTaskOpen(true);
+      }}>Turn into task</button>
+  ) : null;
+
+  const taskUnavailable = !deleted && !task && !isAgent && mine && !archived && channelId && agents.length > 0 && availableTaskAgents.length === 0 ? (
+    <button type="button" role="menuitem" className="task-inline-state" disabled
+      title="No available room agent can take this task right now.">
+      Turn into task
+      <span className="sr-only" role="status">No available room agent can take this task right now.</span>
+    </button>
+  ) : null;
 
   /* A tombstone has no actions: there is nothing left to react to, copy, edit
      or reply to, and a button that always errors is a dead click. */
@@ -6613,26 +8947,7 @@ const MessageRow = React.memo(function MessageRow({
       <button className="ma" title="Keep it" onClick={() => setConfirmDelete(false)}>Keep</button>
     </div>
   ) : (
-    <div className="msgactions">
-      <span className="reacthold" ref={reactHoldRef}>
-        <button className="ma react" title="React to this" aria-expanded={pickEmoji}
-          onClick={() => setPickEmoji(o => !o)}>☺</button>
-        {pickEmoji && (
-          <div className="reactpop" role="menu" aria-label="React with an emoji">
-            {REACT_EMOJI.map(e => {
-              const isMine = !!me
-                && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
-              return (
-                <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
-              );
-            })}
-          </div>
-        )}
-      </span>
-      {/* THE WAY IN. It used to be a bare ↳ among five other glyphs, so the
-          only door to a thread was an unlabelled icon that appears on hover —
-          which is a fair description of a feature nobody can find. It carries
-          the word now, and it says which of the two things it will do. */}
+    <div className={`msgactions${moreOpen || pickEmoji || handOpen || turnTaskOpen ? " is-open" : ""}`}>
       {!inThread && (onOpenThread || onInlineReply) && (
         <button className="ma reply"
           title={onOpenThread ? "Reply in a thread on this message" : "Reply to this, here in the conversation"}
@@ -6642,24 +8957,199 @@ const MessageRow = React.memo(function MessageRow({
           <span className="arrow" aria-hidden="true">↳</span>Reply
         </button>
       )}
-      <button className="ma" title={`Write back to ${m.authorName}`}
-        onClick={() => composerInsert?.(`@${m.authorName} `)}>↩</button>
-      <button className="ma" title="Copy this message" onClick={copy}>{copied ? "✓" : "⧉"}</button>
-      <button className="ma" title={savedPending ? "Updating saved message" : saved ? "Remove from saved" : "Save for later"}
-        aria-pressed={saved} aria-busy={savedPending} disabled={savedPending}
-        onClick={() => saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id)}>
-        {saved ? "★" : "☆"}
-      </button>
-      {mine && (
-        <button className="ma edit" title="Change what this says"
-          onClick={() => { setDraft(m.text); setEditing(true); }}>✎</button>
+      <span className="reacthold" ref={reactHoldRef}>
+        <button className="ma react" title="React to this" aria-label="React to this message"
+          aria-expanded={pickEmoji} aria-haspopup="menu"
+          onClick={() => setPickEmoji(o => !o)}>☺</button>
+        {pickEmoji && (
+          <div className="reactpop reactpicker emojipop" role="menu" aria-label="React with an emoji">
+            <input className="emoji-search" type="search" value={reactionQuery}
+              onChange={e => setReactionQuery(e.target.value)} placeholder="Search emoji"
+              aria-label="Search reaction emoji" autoFocus />
+            <div className="emoji-cats" role="tablist" aria-label="Reaction emoji categories">
+              {Object.keys(reactionCatalog).map(category => (
+                <button key={category} type="button" role="tab"
+                  aria-selected={reactionCategory === category}
+                  onClick={() => setReactionCategory(category)}>{category}</button>
+              ))}
+            </div>
+            <div className="emoji-grid" role="group" aria-label="Reaction emoji choices">
+              {reactionRows.map((e, i) => {
+                const isMine = !!me
+                  && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
+                return (
+                  <button key={`${e}-${i}`} type="button" role="menuitem" aria-label={`React with ${e}`}
+                    aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </span>
+      {/* THE WAY IN. It used to be a bare ↳ among five other glyphs, so the
+          only door to a thread was an unlabelled icon that appears on hover —
+          which is a fair description of a feature nobody can find. It carries
+          the word now, and it says which of the two things it will do. */}
+      {!isAgent && mine && handAllowed && handOpen && (
+        <span className="handhold" ref={handHoldRef}>
+          <button className="ma hand" type="button" title="Hand this message to a room agent"
+            aria-label="Hand this message to a room agent" aria-expanded={handOpen}
+            aria-haspopup="dialog" aria-controls={`handoff-dialog-${m.id}`} ref={handButtonRef}
+            onClick={() => setHandOpen(open => !open)}>
+            {handTask || handoff?.state === "succeeded" ? "Handoff status"
+              : handoff?.state === "lost" || handoff?.state === "refused" ? "Retry handoff" : "Hand this to…"}
+          </button>
+          {handOpen && (
+            <div className="handpop" id={`handoff-dialog-${m.id}`} role="dialog" aria-modal="false"
+              aria-labelledby={`handoff-title-${m.id}`}>
+              <div className="handhead">
+                <strong id={`handoff-title-${m.id}`}>Hand this message to…</strong>
+                <button className="handclose" type="button" aria-label="Close handoff chooser"
+                  title="Close" onClick={closeHand}>×</button>
+              </div>
+              <p className="handsource">Source preserved: this message and its thread ({handSourceThreadId}).</p>
+              <div className="handagents" role="listbox" aria-label="Room agents">
+                {handCandidates.map(candidate => {
+                  const selected = handTarget === candidate.agent.id;
+                  return (
+                    <button key={candidate.agent.id} type="button" role="option"
+                      className={`handagent${selected ? " selected" : ""}`}
+                      aria-selected={selected} aria-disabled={!candidate.allowed}
+                      disabled={!candidate.allowed || !!handRequestPending || !!handTask}
+                      title={candidate.disabledReason ?? candidate.availabilityTitle}
+                      onClick={() => setHandTarget(candidate.agent.id)}>
+                      <span className="handagent-name">{candidate.agent.emoji} {candidate.agent.name}</span>
+                      <span className="handfact">Permission: {candidate.permission}</span>
+                      <span className="handfact">Capabilities: {candidate.capabilities}</span>
+                      <span className="handfact" title={candidate.availabilityTitle}>Availability: {candidate.availability}</span>
+                      {!candidate.allowed && <span className="handfact handblocked">Unavailable: {candidate.disabledReason}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {handTask && (
+                <p className="handstatus" role="status">Delegation status: {handTask.status.replace("_", " ")}
+                  {handTask.approvalId && handTask.status === "waiting_approval" ? " · approval pending" : ""}
+                </p>
+              )}
+              {handRequestPending && !handTask && (
+                <p className="handstatus" role="status">
+                  {connected ? "Waiting for the relay to confirm this task…" : "Relay disconnected; task status is not yet known."}
+                </p>
+              )}
+              {!handTask && handoff?.state === "succeeded" && (
+                <p className="handstatus" role="status">Relay accepted this handoff; the task projection is still syncing.</p>
+              )}
+              {!handTask && (handoff?.state === "lost" || handoff?.state === "refused") && (
+                <p className="handstatus" role="status">{handoff.problem ?? "The relay did not confirm this handoff."}</p>
+              )}
+              {!handTask && !handRequestPending && (
+                <button className="btn small primary handsubmit" type="button"
+                  disabled={!handTargetCandidate?.allowed || !connected}
+                  title={!connected ? "Reconnect to hand off this message" : handTargetCandidate?.disabledReason}
+                  onClick={handOff}>
+                  {connected ? "Hand it over" : "Reconnect to continue"}
+                </button>
+              )}
+            </div>
+          )}
+        </span>
       )}
-      {mine && (
-        <button className="ma del" title="Take this message back"
-          onClick={() => setConfirmDelete(true)}>🗑</button>
-      )}
+      <span className="msg-more" ref={moreHoldRef}>
+        <button className="ma more" type="button" title="More message actions"
+          aria-label="More message actions" aria-haspopup="menu" aria-expanded={moreOpen && !turnTaskOpen}
+          aria-controls={`msg-more-${m.id}`} ref={moreButtonRef}
+          onClick={() => setMoreOpen(open => !open)}
+          onKeyDown={e => {
+            if (e.key !== "ArrowDown" || moreOpen) return;
+            e.preventDefault();
+            setMoreOpen(true);
+          }}>⋯</button>
+        {moreOpen && !turnTaskOpen && (
+          <div id={`msg-more-${m.id}`} className="msg-more-menu" role="menu"
+            aria-label="More message actions" onKeyDown={handleMenuKeys}>
+            {taskAction}
+            {taskUnavailable}
+            {!isAgent && mine && handAllowed && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setHandOpen(true); }}>
+                {handTask || handoff?.state === "succeeded" ? "Handoff status"
+                  : handoff?.state === "lost" || handoff?.state === "refused" ? "Retry handoff" : "Hand this to…"}
+              </button>
+            )}
+            <button type="button" role="menuitem"
+              onClick={() => { setMoreOpen(false); composerInsert?.(`@${m.authorName} `); }}>
+              Mention {m.authorName}
+            </button>
+            <button type="button" role="menuitem"
+              onClick={() => { setMoreOpen(false); copy(); }}>
+              {copied ? "Copied" : "Copy message"}
+            </button>
+            <button type="button" role="menuitem" aria-pressed={saved} disabled={savedPending}
+              onClick={() => { setMoreOpen(false); saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id); }}>
+              {saved ? "Remove from saved" : "Save for later"}
+            </button>
+            {canManagePins && channelId && (
+              <button type="button" role="menuitem" aria-pressed={pinned} disabled={pinPending}
+                onClick={() => { setMoreOpen(false); pinned ? client.unpinChannelMessage(channelId, m.id) : client.pinChannelMessage(channelId, m.id); }}>
+                {pinned ? "Unpin from channel" : "Pin in channel"}
+              </button>
+            )}
+            {mine && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setDraft(m.text); setEditing(true); }}>
+                Edit message
+              </button>
+            )}
+            {mine && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setConfirmDelete(true); }}>
+                Take this back
+              </button>
+            )}
+          </div>
+        )}
+      </span>
     </div>
   );
+
+  const taskComposer = turnTaskOpen && !task && !deleted && !isAgent && mine && !archived && availableTaskAgents.length > 0 && channelId ? (
+    <div className="task-inline" role="dialog" aria-label="Turn message into a task">
+      <label><span>Task owner</span>
+        <select value={taskAgentId} onChange={event => setTaskAgentId(event.target.value)}>
+          {taskCandidates.map(agentOption => {
+            const unavailable = !availableTaskAgents.some(candidate => candidate.id === agentOption.id);
+            const reason = presence?.[agentOption.id]?.reason ?? (agentOption.lifecycle === "paused" ? "paused by its owner" : agentOption.lifecycle === "disabled" ? "switched off" : "unavailable");
+            return <option key={agentOption.id} value={agentOption.id} disabled={unavailable}>{agentOption.name}{unavailable ? ` (${reason})` : ""}</option>;
+          })}
+        </select>
+      </label>
+      <label><span>Task title</span>
+        <textarea ref={taskTitleRef} value={taskTitle} rows={2} maxLength={4000}
+          onChange={event => setTaskTitle(event.target.value)} />
+      </label>
+      <label><span>Deadline (optional)</span>
+        <input type="datetime-local" value={taskDeadline}
+          onChange={event => setTaskDeadline(event.target.value)} />
+      </label>
+      <div className="task-inline-actions">
+        <button className="btn primary small" disabled={taskState === "pending" || !taskAgentId || !taskTitle.trim()}
+          onClick={submitTask}>{taskState === "pending" ? "Creating…" : "Create task"}</button>
+        <button className="btn ghost small" onClick={closeTask}>Cancel</button>
+      </div>
+      {taskState === "succeeded" && <p role="status" className="task-inline-state success">Task created{taskMutation?.taskId ? ` · ${taskMutation.taskId}` : ""}.</p>}
+      {(taskState === "refused" || taskState === "lost") && <p role="alert" className="task-inline-state">{taskMutation?.problem ?? "The task could not be created."}</p>}
+    </div>
+  ) : null;
+  const taskCard = task && !deleted ? (
+    <div className="task-source-card" role="status">
+      <strong>Task created</strong>
+      <span>{task.title}</span>
+      <span>Owner: {agents.find(candidate => candidate.id === task.agentId)?.name ?? "room agent"}</span>
+      {task.deadlineAt && <span>Deadline: {new Date(task.deadlineAt).toLocaleString()}</span>}
+      <span data-task-status={task.status}>{task.status.replaceAll("_", " ")}</span>
+    </div>
+  ) : null;
 
   const editor = (
     <div className="editmsg">
@@ -6691,23 +9181,28 @@ const MessageRow = React.memo(function MessageRow({
     return (
       <article className={`msg cont${deleted ? " deleted" : ""}${litUp ? " litup" : ""}`}
         data-msg={m.id}>
-        <div className="when-gutter">{clock(m.ts)}</div>
+        <div className="when-gutter">{chatPrefs.timestamp === "exact" ? exactTimestamp(m.ts) : clock(m.ts)}</div>
         <div className="body">
           {deleted ? tombstone : editing ? editor : drawn ? paragraph(drawn) : null}
           {!deleted && !editing && <MessageArtifacts text={m.text} />}
+          {!deleted && !editing && <RichLinkPreviewCards previews={richPreviews} />}
           {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
           {!deleted && m.attachments && m.attachments.length > 0 &&
             <MessageFiles attachments={m.attachments} />}
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
+          {!deleted && mine && !isAgent && <DeliveryStatus status={delivery} />}
           {refusedNotes}
           {reactionRow}
           {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+          {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
           {/* the steps arriving while the turn runs — drawn on the message that
               ASKED, which is where the 👀 already is, and gone when it ends */}
-          {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
+          {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
           {threadLine}
+          {taskComposer}
+          {taskCard}
+          {actions}
         </div>
-        {actions}
       </article>
     );
   }
@@ -6752,18 +9247,19 @@ const MessageRow = React.memo(function MessageRow({
       : drawn ? paragraph(drawn) : null;
 
   return (
-    <article data-msg={m.id}
+    <article id={`message-${m.id}`} data-msg={m.id}
       className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`
         + `${deleted ? " deleted" : ""}${litUp ? " litup" : ""}${inOpenThread ? " inthread" : ""}`}>
       {isAgent
-        ? <AgentFace name={m.authorName} size={34} lamp={working ? "run" : "live"} />
-        : <PersonFace name={m.authorName} size={34} />}
+        ? <AgentFace name={m.authorName} size={avatarPx} lamp={working ? "run" : "live"} />
+        : <PersonFace name={m.authorName} size={avatarPx} />}
       <div className="body">
         <div className="who">
           <b>{m.authorName}</b>
           {isAgent && <span className="badge">Agent</span>}
-          <span className="t">{clock(m.ts)}</span>
+          <span className="t">{chatPrefs.timestamp === "exact" ? exactTimestamp(m.ts) : clock(m.ts)}</span>
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
+          {!deleted && mine && !isAgent && <DeliveryStatus status={delivery} />}
           {m.proactive && <span className="chip is-ultra selfstart">Nobody asked — I noticed</span>}
         </div>
         {answeringLine}
@@ -6779,20 +9275,24 @@ const MessageRow = React.memo(function MessageRow({
         )}
         {deleted ? tombstone : editing ? editor : body}
         {!deleted && !editing && <MessageArtifacts text={m.text} />}
+        {!deleted && !editing && <RichLinkPreviewCards previews={richPreviews} />}
         {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
         {!deleted && m.attachments && m.attachments.length > 0 &&
           <MessageFiles attachments={m.attachments} />}
         {refusedNotes}
         {reactionRow}
         {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+        {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
         {/* same, on a full message — see the note on the continuation above */}
-        {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
+        {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
         {threadLine}
+        {taskComposer}
+        {taskCard}
+        {actions}
       </div>
-      {actions}
     </article>
   );
-});
+}, areMessageRowPropsEqual);
 
 /* ---- one thread, in the right-hand rail ---- */
 
@@ -6809,7 +9309,15 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const chatStyle = {
+    "--cloud9-chat-scale": chatPrefs.fontSize === "small" ? "0.92" : chatPrefs.fontSize === "large" ? "1.12" : "1",
+    "--cloud9-avatar-scale": String(chatAvatarScale(chatPrefs.avatarSize)),
+  } as React.CSSProperties;
   const held = world.threads[rootId];
+  const channelAgents = useMemo(() =>
+    channel.memberIds.map(id => world.agents.find(agent => agent.id === id)).filter(Boolean) as AgentDef[],
+    [channel.memberIds, world.agents]);
   // the root may also be on screen in the conversation behind this panel
   const fromChannel = (world.messages[channel.id] ?? []).find(m => m.id === rootId);
   const messages = held ?? (fromChannel ? [fromChannel] : []);
@@ -6823,11 +9331,26 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
     for (const a of world.agents) map.set(a.id, a);
     return map;
   }, [world.agents]);
-  /* A "📦 Task done" reply shows its run card inside a thread too — the same
-     match the conversation makes, made here, so moving the work out of the
-     bubble did not quietly take the card away from this panel. */
-  const doneRunIds = useMemo(
-    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   /* A "📦 Task done" reply shows its run card inside a thread too — the same
+      match the conversation makes, made here, so moving the work out of the
+      bubble did not quietly take the card away from this panel. */
+   const doneRunIds = useMemo(
+     () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   const taskByMessage = useMemo(() => {
+     const map = new Map<ID, Task>();
+     for (const message of messages) {
+       const task = taskForMessage(message, world.tasks, channelAgents);
+       if (task) map.set(message.id, task);
+     }
+     return map;
+    }, [messages, world.tasks, channelAgents]);
+  const handoffByMessage = useMemo(() => {
+    const map = new Map<ID, HandoffRequestState>();
+    for (const handoff of Object.values(world.handoffs)) {
+      if (handoff.channelId === channel.id) map.set(handoff.sourceMessageId, handoff);
+    }
+    return map;
+  }, [world.handoffs, channel.id]);
 
   /* THE SAME OWNER AS THE ROOM'S OWN LIST, not a second answer to the same
      question. A thread is a conversation too: a reply typed here, and a reply
@@ -6842,6 +9365,22 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
       follow(messages.at(-1)?.authorId === world.me?.id ? "sent" : "arrived");
     }
   }, [messages.length, follow, atBottom, messages, world.me?.id]);
+  /* Opening the thread is the act that makes its replies visible. Advance the
+     same durable channel cursor the room viewport uses; otherwise the local
+     "New" badge clears while the sidebar's thread-unread count can remain
+     forever, claiming there is still something the person has not opened. */
+  const latestThreadReply = replies.at(-1);
+  useEffect(() => {
+    if (!world.connected) return;
+    const latest = latestThreadReply;
+    if (!latest) return;
+    client.markRead(channel.id, latest.ts, latest.id);
+    if (latest.authorKind === "human" && latest.authorId !== world.me?.id) {
+      client.send({ type: "messageReceipt", channelId: channel.id, messageId: latest.id,
+        status: "read", ts: latest.ts, messageIdCursor: latest.id });
+    }
+  }, [channel.id, latestThreadReply?.id, latestThreadReply?.ts,
+    latestThreadReply?.authorId, latestThreadReply?.authorKind, world.connected, world.me?.id]);
   useEffect(() => {
     if (!takeover) return;
     const first = panelRef.current?.querySelector<HTMLElement>(
@@ -6850,7 +9389,9 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   }, [takeover]);
 
   return (
-    <aside ref={panelRef} className={`aside threadpanel${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+    <aside ref={panelRef}
+      className={`aside threadpanel chat-font-${chatPrefs.fontSize} chat-density-${chatPrefs.density} chat-time-${chatPrefs.timestamp} chat-avatar-${chatPrefs.avatarSize}${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+      style={chatStyle}
       aria-label="Thread">
       <div className="threadhead">
         {/* THE WAY BACK, when the thread is over the room. At a narrow window
@@ -6869,17 +9410,23 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
             onClick={onToggleTakeover}>⤢</button>
         )}
         {!forced && (
-          <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
+          <button className="iconbtn threadclose" aria-label="Close the thread" title="Close the thread" onClick={onClose}>✕</button>
         )}
       </div>
       <div className="threadbody" ref={bodyRef} onScroll={noteScrolled}>
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
           <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={world.agents} users={world.users}
-            channelId={channel.id}
-            doneRunId={doneRunIds.get(root.id)}
-            agent={agentOf.get(root.authorId)} />
+            me={world.me} agents={channelAgents} users={world.users} presence={world.presence}
+            delivery={root.authorKind === "human" && root.authorId === world.me?.id
+              ? world.messageStatuses[root.id] : undefined}
+             connected={world.connected}
+             channelId={channel.id}
+             doneRunId={doneRunIds.get(root.id)}
+             task={taskByMessage.get(root.id)}
+             handoff={handoffByMessage.get(root.id)}
+             taskMutation={Object.values(world.taskMutations).find(mutation => mutation.sourceMessageId === root.id)}
+             agent={agentOf.get(root.authorId)} />
         )}
         {root && (
           <div className="threadcount">
@@ -6888,18 +9435,84 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
               : countOf(replies.length, "reply", "replies")}
           </div>
         )}
+        {root && <ThreadSummaryCard channel={channel} rootId={rootId} agents={channelAgents} />}
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={world.agents} users={world.users}
-            channelId={channel.id}
-            doneRunId={doneRunIds.get(m.id)}
-            agent={agentOf.get(m.authorId)}
+            me={world.me} agents={channelAgents} users={world.users} presence={world.presence}
+            delivery={m.authorKind === "human" && m.authorId === world.me?.id
+              ? world.messageStatuses[m.id] : undefined}
+             connected={world.connected}
+             channelId={channel.id}
+             doneRunId={doneRunIds.get(m.id)}
+             task={taskByMessage.get(m.id)}
+             handoff={handoffByMessage.get(m.id)}
+             taskMutation={Object.values(world.taskMutations).find(mutation => mutation.sourceMessageId === m.id)}
+             agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
       </div>
       <Composer channel={channel} replyTo={rootId} onSent={() => follow("sent")} />
     </aside>
   );
+}
+
+/** Provider-backed facts for one thread. This card is inert until its button is pressed. */
+function ThreadSummaryCard({ channel, rootId, agents }: {
+  channel: Channel; rootId: ID; agents: AgentDef[];
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const summaries = Object.values(world.threadSummaries)
+    .filter(summary => summary.channelId === channel.id && summary.threadId === rootId)
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.requestId.localeCompare(a.requestId));
+  const summary = summaries[0];
+  const summarizer = agents.find(agent => agent.lifecycle !== "paused"
+    && agent.lifecycle !== "disabled" && mayDriveAgent(world.me?.id ?? "", agent));
+  const request = () => {
+    if (summarizer) client.requestThreadSummary(channel.id, rootId, rootId, summarizer.id);
+  };
+  if (!summary) {
+    return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+        <button className="btn small" type="button" onClick={request} disabled={!summarizer}
+          title={summarizer ? "Ask the available agent for a provider-backed summary" : "No available agent can summarize this thread"}>
+          Summarize thread
+        </button>
+      </div>
+      {!summarizer && <p className="thread-summary-note" role="status">No available agent can summarize this thread.</p>}
+    </section>;
+  }
+  if (summary.status === "pending") {
+    return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2></div>
+      <p className="thread-summary-note" role="status" aria-live="polite">Summary pending from the provider…</p>
+    </section>;
+  }
+  if (summary.status !== "ready") {
+    return <section className="thread-summary-card is-error" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+        <button className="btn small" type="button" onClick={() => client.retryThreadSummary(summary.requestId)}>Retry</button>
+      </div>
+      <p className="thread-summary-note" role="status">{summary.status === "refused" ? "Summary refused" : "Summary unavailable"}{summary.error ? ` — ${summary.error}` : ""}.</p>
+    </section>;
+  }
+  return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+    <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+      <span className="thread-summary-state" role="status">Ready</span></div>
+    <SummaryFacts title="Decisions" rows={summary.decisions} />
+    <SummaryFacts title="Open questions" rows={summary.openQuestions} />
+    <SummaryFacts title="Next actions" rows={summary.nextActions} />
+    {summary.sources.length > 0 && <div className="thread-summary-sources">
+      <h3>Sources</h3>
+      <ul>{summary.sources.map(source => <li key={source.messageId}>
+        <a href={`#message-${source.messageId}`}>{source.label}</a>
+      </li>)}</ul>
+    </div>}
+  </section>;
+}
+
+function SummaryFacts({ title, rows }: { title: string; rows: string[] }): React.JSX.Element | null {
+  if (rows.length === 0) return null;
+  return <div className="thread-summary-facts"><h3>{title}</h3><ul>{rows.map((row, i) => <li key={`${title}-${i}`}>{row}</li>)}</ul></div>;
 }
 
 /**
@@ -6995,6 +9608,32 @@ const EMOJI_KEYWORDS: Record<string, string> = {
   "❤️": "heart love", "👀": "eyes look", "🤔": "think thinking", "💯": "hundred perfect",
 };
 
+function useRecentEmojis(userId?: ID): readonly string[] {
+  const subscribe = useCallback((listener: () => void) => subscribeRecentEmojis(userId, listener), [userId]);
+  const read = useCallback(() => recentEmojisFor(userId), [userId]);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+function emojiCatalogFor(recent: readonly string[]): Record<string, readonly string[]> {
+  return recent.length > 0 ? { Recent: [...recent], ...EMOJI_CATEGORIES } : EMOJI_CATEGORIES;
+}
+
+function emojiRowsFor(
+  catalog: Record<string, readonly string[]>, category: string, query: string,
+): readonly string[] {
+  const source = catalog[category] ?? QUICK_EMOJI;
+  const wanted = query.trim().toLowerCase();
+  if (!wanted) return source;
+  const all = Object.entries(catalog).flatMap(([group, values]) =>
+    values.map(value => ({ value, group })));
+  return all.filter(({ value, group }) =>
+    group.toLowerCase().includes(wanted)
+      || (EMOJI_KEYWORDS[value] ?? "").includes(wanted)
+      || value.includes(wanted))
+    .map(({ value }) => value)
+    .filter((value, index, values) => values.indexOf(value) === index);
+}
+
 /* ============== ONE WAY IN FOR EVERY TYPED COMMAND ==============
  *
  * THE BUG THIS FIXES. Everything an agent can be TOLD to do — open a GitHub
@@ -7053,6 +9692,41 @@ interface RoomCommand {
  * here fails the drift test above.
  */
 const ROOM_COMMANDS: RoomCommand[] = [
+  {
+    cmd: "/summarize",
+    label: "Summarize this conversation",
+    say: "Asks the selected room agent for a concise summary of decisions, open questions, and next actions. Nothing is sent until you review it.",
+    line: w => `@${w.first} /summarize <what to focus on (optional)>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/plan",
+    label: "Plan a piece of work",
+    say: "Shows a read-only plan and waits for your approval before the selected agent does the work.",
+    line: w => `@${w.first} /plan <what to do>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/review",
+    label: "Review a target",
+    say: "Runs a read-only review and reports findings. It cannot edit files or publish anything.",
+    line: w => `@${w.first} /review <file, change, or question>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/ship",
+    label: "Ship repository work",
+    say: "Works in the agent's own repository branch. Any push or pull request still stops at the existing approval gate.",
+    line: w => `@${w.first} /ship <what to ship>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "/assign",
+    label: "Assign background work",
+    say: "Creates a durable background task for the named room agent. If its permissions require approval, the task waits in Tasks.",
+    line: w => `/assign @${w.first} <what they should do>`,
+    needs: ["agent"],
+  },
   {
     cmd: "!issue",
     label: "Open a GitHub issue",
@@ -7159,7 +9833,7 @@ const ACTIONS_PROMISE =
  */
 function commandMatches(c: RoomCommand, typed: string): boolean {
   if (!typed) return true;
-  const words = [c.cmd, ...(c.aliases ?? [])].map(w => w.replace(/^!/, "").toLowerCase());
+  const words = [c.cmd, ...(c.aliases ?? [])].map(w => w.replace(/^[!/]/, "").toLowerCase());
   return words.some(w => w.startsWith(typed)) || c.label.toLowerCase().includes(typed);
 }
 
@@ -7180,12 +9854,29 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   onSent?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const recentEmojis = useRecentEmojis(world.me?.id);
   const [text, setText] = useState("");
+  const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "restored" | "saved" | "unavailable">("idle");
+  const [remoteDraftReady, setRemoteDraftReady] = useState(false);
+  const restoredDraftAt = useRef<string | null>(null);
+  /** Text accepted by the last send in this scope. A late projection of that
+      exact text is the old draft write, not a new cross-window edit. */
+  const acceptedSentText = useRef<string | null>(null);
+  const acceptedSentScope = useRef<string | null>(null);
+  /** After an accepted send, do not let the debounced empty snapshot recreate
+      the draft while the correlated relay removal is still settling. */
+  const suppressEmptyRelayDraft = useRef(false);
   const [acIndex, setAcIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiQuery, setEmojiQuery] = useState("");
   const [emojiCategory, setEmojiCategory] = useState("Quick");
-  const [recording, setRecording] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState<VoiceRecordingStatus>("idle");
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
+  const [recordingLevels, setRecordingLevels] = useState<number[]>([]);
+  const [recordingMeterReady, setRecordingMeterReady] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
   /* the Aa formatting strip — one click deep, the Buzz shape (F1) */
   const [fmtOpen, setFmtOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -7210,8 +9901,17 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      conversation's own box keeps every one of them even while it is answering
      something — it is the same box it always was, only aimed. */
   const inThreadPanel = !!replyTo && !onStopAnswering;
+  /* Text is durable per person, room, and reply target. Files deliberately
+     remain in the relay's existing parked-upload lifecycle: a browser cannot
+     restore a File safely after restart, so Cloud9 never pretends it can. */
+  const draftScope = useMemo<ChatDraftScope | null>(() => world.me?.id
+    ? { userId: world.me.id, channelId: channel.id, ...(replyTo ? { threadId: replyTo } : {}) }
+    : null, [channel.id, replyTo, world.me?.id]);
+  const draftKey = useMemo(() => draftScope ? chatDraftKey(draftScope) : null, [draftScope]);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const mentionRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replacementForRef = useRef<string | null>(null);
   /* wraps the emoji button AND its tray, so a click anywhere else closes it */
   const emojiHoldRef = useRef<HTMLSpanElement>(null);
   const toolsRef = useRef<HTMLDivElement>(null);
@@ -7219,10 +9919,76 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const recordingStartingRef = useRef(false);
   const recordingRequestRef = useRef(0);
   const recordingStreamRef = useRef<MediaStream | null>(null);
-  const keepRecordingRef = useRef(false);
+  const recordingFinishRef = useRef<"keep" | "cancel" | "error" | null>(null);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingAnimationRef = useRef<number | null>(null);
+  const recordingAudioContextRef = useRef<AudioContext | null>(null);
+  const recordingAnalyserRef = useRef<AnalyserNode | null>(null);
+  const recordingGateRef = useRef(false);
+  const recordingOwnerRef = useRef<number | null>(null);
+  const recordingMeterOwnerRef = useRef<number | null>(null);
+  const recordingFinishModesRef = useRef(new Map<number, "keep" | "cancel" | "error" | null>());
   const uploads = world.uploads[channel.id] ?? [];
-  const ready = uploads.filter(u => u.state === "done").length;
-  const busy = uploads.some(u => u.state === "sending");
+  const scopedUploads = useMemo(() => uploads.filter(u => (u.threadId ?? "") === (replyTo ?? "")), [uploads, replyTo]);
+  const ready = scopedUploads.filter(u => u.state === "done").length;
+  const busy = scopedUploads.some(u => u.state === "sending");
+  const durableDraft = client.draft(channel.id, replyTo);
+  /** Agents explicitly named in the current text are the only real invocation
+      targets. Controls never appear for ordinary prose or a person mention. */
+  const roomAgents = useMemo(
+    () => world.agents.filter(a => channel.memberIds.includes(a.id)),
+    [world.agents, channel.memberIds]);
+  const invocationAgent = useMemo(() => {
+    const target = invocationTargetFor(text, roomAgents);
+    return roomAgents.find(agent => agent.id === target && mayDriveAgent(world.me?.id ?? "", agent));
+  }, [roomAgents, text, world.me?.id]);
+  const invocationTarget = invocationAgent?.id;
+  const invocationProvider = invocationAgent?.provider === "codex" ? "codex" : "claude";
+  const invocationModels = invocationAgent
+    ? (world.harness?.[invocationProvider]?.models ?? []).filter(model => typeof model === "string" && model)
+    : [];
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const [invocationModel, setInvocationModel] = useState<string | undefined>(undefined);
+  const [invocationEffort, setInvocationEffort] = useState<AgentEffort | undefined>(undefined);
+  const [invocationScope, setInvocationScope] = useState<InvocationPermissionScope>("agent");
+  const invocationRef = useRef<HTMLElement>(null);
+  const priorInvocationTarget = useRef<ID | undefined>(undefined);
+  useEffect(() => {
+    if (priorInvocationTarget.current === invocationTarget) return;
+    priorInvocationTarget.current = invocationTarget;
+    setInvocationOpen(false);
+    setInvocationScope("agent");
+    setInvocationModel(undefined);
+    setInvocationEffort(undefined);
+  }, [invocationTarget]);
+  useEscapeCloses(() => setInvocationOpen(false), invocationOpen && !!invocationAgent);
+  useClickAwayCloses(invocationRef, () => setInvocationOpen(false), invocationOpen && !!invocationAgent);
+  const hasComposerAccess = !!world.me && (channel.memberIds.includes(world.me.id)
+    || world.agents.some(agent => agent.ownerId === world.me!.id && channel.memberIds.includes(agent.id)));
+  const recordingAllowed = voiceRecordingAllowed({
+    connected: world.connected,
+    authFailed: world.authFailed,
+    archived: !!channel.archivedAt,
+    hasAccess: hasComposerAccess,
+  });
+  /* This ref is written during render so a permission promise that resolves
+     before React effects flush still sees the current room/session gate. */
+  recordingGateRef.current = recordingAllowed;
+  const recordingSessionId = voiceRecordingSessionToken({
+    identity: world.me?.id ?? "",
+    channelId: channel.id,
+    threadId: replyTo,
+    accessEpoch: [...channel.memberIds].sort().join(","),
+    connected: world.connected,
+    authFailed: world.authFailed,
+    archived: !!channel.archivedAt,
+  });
+  /* Written during render for the same reason as recordingGateRef: a promise
+     can resolve before an effect gets a chance to run. */
+  const recordingSessionTokenRef = useRef(recordingSessionId);
+  recordingSessionTokenRef.current = recordingSessionId;
+  const recordingSessionRef = useRef(recordingSessionId);
 
   /**
    * HOW MUCH IS SITTING UNSENT, against the ceiling the hub actually enforces.
@@ -7239,6 +10005,96 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       .reduce((n, u) => n + u.size, 0),
     [world.uploads]);
   const parkedHours = Math.round(ATTACHMENT_LIMITS.parkedTtlMs / 3_600_000);
+
+  /* Hydrate before this scope may write. Without the separate `hydratedDraftKey`
+     guard, React could briefly save the previous room's words into the next
+     room while the channel changes. */
+  useEffect(() => {
+    suppressEmptyRelayDraft.current = false;
+    // Reconnects re-run hydration for the same room/thread. Preserve the
+    // accepted-send fence across that transport churn; only a real scope
+    // change may discard it.
+    if (acceptedSentScope.current !== draftKey) {
+      acceptedSentScope.current = draftKey;
+      acceptedSentText.current = null;
+    }
+    setHydratedDraftKey(null);
+    setRemoteDraftReady(false);
+    if (!draftScope || !draftKey) {
+      setText("");
+      setDraftStatus("idle");
+      return;
+    }
+    const loaded = loadChatDraft(draftScope);
+    if (loaded.ok) {
+      setText(loaded.text ?? "");
+      setDraftStatus(loaded.text ? "restored" : "idle");
+    } else {
+      setText("");
+      setDraftStatus("unavailable");
+    }
+    setHydratedDraftKey(draftKey);
+    client.listDrafts(channel.id, replyTo, () => setRemoteDraftReady(true));
+  }, [draftKey, draftScope, world.connected]);
+
+  useEffect(() => {
+    if (!durableDraft) return;
+    const marker = `${durableDraft.id}:${durableDraft.updatedAt}:${world.connected ? "connected" : "offline"}`;
+    if (restoredDraftAt.current === marker) return;
+    restoredDraftAt.current = marker;
+    // A relay projection may arrive after an accepted send while the person is
+    // already typing the next message. Restoration may fill an empty box, but
+    // it must never replace newer local input with an older cross-window draft.
+    if (text.length === 0) {
+      if (shouldRestoreDurableChatDraft({
+        localText: text, durableText: durableDraft.text,
+        acceptedSentText: acceptedSentScope.current === draftKey ? acceptedSentText.current : null,
+      })) {
+        acceptedSentText.current = null;
+        setText(durableDraft.text);
+      }
+    }
+    // A reconnect creates a fresh relay projection even when updatedAt did
+    // not change. Reconcile parked ids again so an expired/reclaimed file is
+    // visible instead of leaving a stale local tile behind.
+    client.restoreDraftUploads(durableDraft);
+  }, [durableDraft?.id, durableDraft?.updatedAt, channel.id, replyTo, world.connected]);
+
+  useEffect(() => {
+    if (!draftScope || !draftKey || hydratedDraftKey !== draftKey) return;
+    const result = text.length > 0
+      ? saveChatDraft(draftScope, text)
+      : clearChatDraft(draftScope);
+    setDraftStatus(result.ok ? (text.length > 0 ? "saved" : "idle") : "unavailable");
+  }, [draftKey, draftScope, hydratedDraftKey, text]);
+
+  /* Mirror metadata to the relay, never browser File objects. The debounce
+     makes typing cheap while preserving the latest text across reconnects. */
+  useEffect(() => {
+    if (!world.me || hydratedDraftKey !== draftKey || !remoteDraftReady) return;
+    if (suppressEmptyRelayDraft.current && text.length === 0 && scopedUploads.length === 0) return;
+    if (suppressEmptyRelayDraft.current) suppressEmptyRelayDraft.current = false;
+    const attachments = scopedUploads.filter(u => u.attachmentId).map(u => ({
+      id: u.attachmentId!, name: u.name, size: u.size,
+      ...(u.mime ? { mime: u.mime } : {}), uploadedAt: u.uploadedAt ?? Date.now(),
+      expiresAt: u.expiresAt ?? Date.now() + ATTACHMENT_LIMITS.parkedTtlMs,
+      state: (u.draftState ?? (u.state === "done" ? "available" : "unavailable")) as "available" | "expired" | "unavailable" | "deleted" | "removed",
+      ...(u.error ? { error: u.error } : {}),
+    }));
+    const timer = window.setTimeout(() => {
+      client.updateDraft({ channelId: channel.id, ...(replyTo ? { threadId: replyTo, replyTo } : {}), text, attachments });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [channel.id, replyTo, text, scopedUploads, draftKey, hydratedDraftKey, remoteDraftReady, world.me]);
+
+  /* Human typing is live only while this composer is focused and has real
+     words. The channel cleanup is separate so ordinary keystrokes renew the
+     signal without sending a stop/start pair on every render. */
+  useEffect(() => {
+    client.setTyping(channel.id,
+      focused && text.trim().length > 0 && world.connected && !channel.archivedAt);
+  }, [channel.archivedAt, channel.id, focused, text, world.connected]);
+  useEffect(() => () => { client.setTyping(channel.id, false); }, [channel.id]);
 
   /**
    * THE BOX GROWS WITH WHAT IS IN IT.
@@ -7258,13 +10114,25 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  }, [text]);
+    ta.style.height = `${Math.min(ta.scrollHeight, inThreadPanel ? 180 : 240)}px`;
+  }, [text, inThreadPanel]);
 
   const mentionQuery = useMemo(() => {
-    const m = /(?:^|\s)@([\w-]*)$/.exec(text);
+    const m = /(?:^|\s)@([^\s@]*)$/.exec(text);
     return m ? m[1].toLowerCase() : null;
   }, [text]);
+
+  /* A room roster is an access boundary. Reset the highlighted row whenever
+     it changes so an index selected for a member who just left can never be
+     applied to a different person. */
+  const mentionRosterKey = useMemo(
+    () => [...channel.memberIds].sort().join(","),
+    [channel.memberIds],
+  );
+  useEffect(() => {
+    setAcIndex(0);
+    setMentionDismissed(false);
+  }, [mentionQuery, mentionRosterKey]);
 
   /**
    * `/` IS THE FAST PATH TO THE SAME LIST THE ＋ OPENS — never a second one.
@@ -7287,33 +10155,117 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      paperclip, a paste, or a drag. `client.attach` is the one owner of what
      happens next (the tray, the ceiling, the hub's refusal in its own words). */
   const attachFiles = useCallback((files: readonly File[]): void => {
-    for (const f of files) client.attach(channel.id, f);
-  }, [channel.id]);
+    // A regular pick/paste/drop is a fresh attachment action. Clear a retry
+    // target that may have been left behind if its file dialog was cancelled.
+    replacementForRef.current = null;
+    for (const f of files) client.attach(channel.id, f, replyTo);
+  }, [channel.id, replyTo]);
+
+  const clearRecordingMeter = useCallback((ownerRequest?: number, updateState = true): void => {
+    if (ownerRequest !== undefined && recordingMeterOwnerRef.current !== ownerRequest) return;
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (recordingAnimationRef.current !== null) {
+      window.cancelAnimationFrame(recordingAnimationRef.current);
+      recordingAnimationRef.current = null;
+    }
+    const context = recordingAudioContextRef.current;
+    recordingAudioContextRef.current = null;
+    recordingAnalyserRef.current = null;
+    recordingMeterOwnerRef.current = null;
+    recordingStartedAtRef.current = null;
+    if (updateState) setRecordingMeterReady(false);
+    if (context && context.state !== "closed") void context.close().catch(() => undefined);
+  }, []);
 
   const stopVoiceRecording = useCallback((): void => {
     const recorder = recorderRef.current;
     if (!recorder || recorder.state === "inactive") return;
-    keepRecordingRef.current = true;
+    recordingFinishRef.current = "keep";
+    if (recordingOwnerRef.current !== null) recordingFinishModesRef.current.set(recordingOwnerRef.current, "keep");
     recorder.stop();
   }, []);
 
+  const cancelVoiceRecording = useCallback((): void => {
+    /* Invalidate a pending permission request too. getUserMedia cannot be
+       aborted, so its eventual stream is stopped and discarded below. */
+    recordingRequestRef.current += 1;
+    recordingStartingRef.current = false;
+    recordingFinishRef.current = "cancel";
+    if (recordingOwnerRef.current !== null) recordingFinishModesRef.current.set(recordingOwnerRef.current, "cancel");
+    setRecordingStatus("idle");
+    setRecordingElapsedMs(0);
+    setRecordingLevels([]);
+    setRecordingMeterReady(false);
+    setRecordingError(null);
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch {
+        const owner = recordingOwnerRef.current;
+        recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+        recordingStreamRef.current = null;
+        recorderRef.current = null;
+        recordingOwnerRef.current = null;
+        recordingFinishRef.current = null;
+        if (owner !== null) {
+          recordingFinishModesRef.current.delete(owner);
+          clearRecordingMeter(owner);
+        }
+      }
+    } else {
+      recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+      recordingStreamRef.current = null;
+      recorderRef.current = null;
+      recordingOwnerRef.current = null;
+      recordingFinishRef.current = null;
+      recordingStartingRef.current = false;
+      clearRecordingMeter();
+    }
+  }, [clearRecordingMeter]);
+
   const startVoiceRecording = useCallback(async (): Promise<void> => {
-    if (recording) {
+    if (recordingStatus === "recording") {
       stopVoiceRecording();
       return;
     }
+    if (recordingStatus === "starting") return;
     if (recordingStartingRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      client.notify("Audio recording is not available on this computer.");
+      const message = "Audio recording is not available on this computer.";
+      setRecordingError(message);
+      client.notify(message);
       return;
     }
     let stream: MediaStream | null = null;
     const request = ++recordingRequestRef.current;
+    const requestSessionToken = recordingSessionTokenRef.current;
+    recordingFinishModesRef.current.set(request, null);
+    setRecordingError(null);
+    setRecordingElapsedMs(0);
+    setRecordingLevels([]);
+    setRecordingMeterReady(false);
+    setRecordingStatus("starting");
     try {
       recordingStartingRef.current = true;
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (request !== recordingRequestRef.current) {
         stream.getTracks().forEach(track => track.stop());
+        recordingFinishModesRef.current.delete(request);
+        return;
+      }
+      if (!voiceRecordingRequestStillCurrent(
+        requestSessionToken, recordingSessionTokenRef.current, recordingGateRef.current,
+      )) {
+        stream.getTracks().forEach(track => track.stop());
+        if (request === recordingRequestRef.current) {
+          recordingStartingRef.current = false;
+          recordingStreamRef.current = null;
+          recordingFinishRef.current = null;
+          setRecordingStatus("idle");
+        }
+        recordingFinishModesRef.current.delete(request);
         return;
       }
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -7322,72 +10274,189 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       const chunks: Blob[] = [];
       recordingStreamRef.current = stream;
       recorderRef.current = recorder;
-      keepRecordingRef.current = false;
+      recordingOwnerRef.current = request;
+      recordingMeterOwnerRef.current = request;
+      recordingFinishRef.current = null;
       recorder.ondataavailable = event => {
         if (event.data.size > 0) chunks.push(event.data);
       };
-      recorder.onerror = () => {
-        keepRecordingRef.current = false;
-        client.notify("Cloud9 could not record that audio message.");
-        if (recorder.state !== "inactive") recorder.stop();
-        else {
-          stream?.getTracks().forEach(track => track.stop());
-          recordingStreamRef.current = null;
-          recorderRef.current = null;
-          setRecording(false);
-        }
-      };
-      recorder.onstop = () => {
-        const shouldKeep = keepRecordingRef.current;
+      let localAudioContext: AudioContext | null = null;
+      let localTimer: number | null = null;
+      let localAnimation: number | null = null;
+      const finish = () => {
+        const mode = recordingFinishModesRef.current.get(request) ?? null;
+        const stale = request !== recordingRequestRef.current
+          || requestSessionToken !== recordingSessionTokenRef.current;
+        const owns = voiceRecordingOwnsResources(request, recordingOwnerRef.current ?? -1)
+          && recorderRef.current === recorder;
         stream?.getTracks().forEach(track => track.stop());
-        if (recorderRef.current === recorder) {
+        if (owns) {
           recordingStreamRef.current = null;
           recorderRef.current = null;
-          keepRecordingRef.current = false;
-          setRecording(false);
+          recordingOwnerRef.current = null;
+          recordingFinishRef.current = null;
+          recordingStartingRef.current = false;
+          if (!stale) setRecordingStatus("idle");
+          clearRecordingMeter(request, !stale);
+        } else {
+          if (localTimer !== null) window.clearInterval(localTimer);
+          if (localAnimation !== null) window.cancelAnimationFrame(localAnimation);
+          if (localAudioContext && localAudioContext.state !== "closed") {
+            void localAudioContext.close().catch(() => undefined);
+          }
         }
-        if (!shouldKeep || chunks.length === 0) return;
+        recordingFinishModesRef.current.delete(request);
+        if (stale) return;
+        if (mode === "error") return;
+        if (mode !== "keep" || chunks.length === 0) {
+          if (mode === "keep" && chunks.length === 0) {
+            const message = "Cloud9 did not receive any audio. Check the microphone, then try again.";
+            setRecordingError(message);
+            client.notify(message);
+          }
+          return;
+        }
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         attachFiles([new File([blob], `voice-message-${stamp}.webm`, { type: blob.type })]);
         client.notify("Audio message added. Review the attachment, then send it.");
       };
+      recorder.onerror = () => {
+        if (recordingOwnerRef.current !== request || recorderRef.current !== recorder) return;
+        recordingFinishRef.current = "error";
+        const message = "Cloud9 could not record that audio message. Check the microphone, then try again.";
+        setRecordingError(message);
+        client.notify(message);
+        if (recorder.state !== "inactive") {
+          try { recorder.stop(); } catch { finish(); }
+        } else finish();
+      };
+      recorder.onstop = finish;
+      const trackEnded = () => {
+        if (recorderRef.current !== recorder || recorder.state === "inactive") return;
+        recordingFinishRef.current = "error";
+        const message = "The microphone was disconnected. The recording was not kept.";
+        setRecordingError(message);
+        client.notify(message);
+        try { recorder.stop(); } catch { finish(); }
+      };
+      stream.getAudioTracks().forEach(track => track.addEventListener("ended", trackEnded, { once: true }));
+
+      /* The analyser is fed by the real stream and is never connected to the
+         speakers, so the meter cannot invent a level or create feedback. */
+      const AudioContextCtor = window.AudioContext
+        ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextCtor) {
+        let context: AudioContext | null = null;
+        try {
+          context = new AudioContextCtor();
+          const analyser = context.createAnalyser();
+          analyser.fftSize = 128;
+          analyser.smoothingTimeConstant = 0.72;
+          context.createMediaStreamSource(stream).connect(analyser);
+          recordingAudioContextRef.current = context;
+          recordingAnalyserRef.current = analyser;
+          setRecordingMeterReady(true);
+          void context.resume().catch(() => undefined);
+          localAudioContext = context;
+          const data = new Uint8Array(analyser.fftSize);
+          const sample = () => {
+            if (recordingAnalyserRef.current !== analyser) return;
+            analyser.getByteTimeDomainData(data);
+            const level = microphoneLevel(data);
+            setRecordingLevels(previous => [...previous.slice(-31), level]);
+            localAnimation = window.requestAnimationFrame(sample);
+            recordingAnimationRef.current = localAnimation;
+          };
+          sample();
+        } catch {
+          recordingAudioContextRef.current = null;
+          recordingAnalyserRef.current = null;
+          setRecordingMeterReady(false);
+          if (context && context.state !== "closed") void context.close().catch(() => undefined);
+        }
+      }
       recorder.start(250);
+      recordingStartedAtRef.current = performance.now();
+      localTimer = window.setInterval(() => {
+        if (!voiceRecordingOwnsResources(request, recordingOwnerRef.current ?? -1)) {
+          if (localTimer !== null) window.clearInterval(localTimer);
+          localTimer = null;
+          return;
+        }
+        const started = recordingStartedAtRef.current;
+        if (started !== null) setRecordingElapsedMs(performance.now() - started);
+      }, 200);
+      recordingTimerRef.current = localTimer;
       if (request === recordingRequestRef.current) recordingStartingRef.current = false;
-      setRecording(true);
-      client.notify("Recording audio. Press the microphone again to stop.");
-    } catch {
+      setRecordingStatus("recording");
+      client.notify("Recording audio. Stop when you are finished, or cancel to discard it.");
+    } catch (error) {
+      const activeRecorder = recorderRef.current;
+      recordingFinishRef.current = "error";
+      if (activeRecorder && activeRecorder.state === "recording") {
+        try { activeRecorder.stop(); } catch { /* the stream teardown below still runs */ }
+      }
       stream?.getTracks().forEach(track => track.stop());
-      if (request === recordingRequestRef.current) {
+      const stale = request !== recordingRequestRef.current
+        || requestSessionToken !== recordingSessionTokenRef.current;
+      clearRecordingMeter(request, !stale);
+      if (!stale) {
         recordingStartingRef.current = false;
         recordingStreamRef.current = null;
         recorderRef.current = null;
-        keepRecordingRef.current = false;
-        setRecording(false);
-        client.notify("Microphone access was not granted.");
+        recordingOwnerRef.current = null;
+        recordingFinishRef.current = null;
+        setRecordingStatus("idle");
+        const message = voiceRecordingFailure(error);
+        setRecordingError(message);
+        client.notify(message);
       }
+      recordingFinishModesRef.current.delete(request);
     }
-  }, [attachFiles, recording, stopVoiceRecording]);
+  }, [attachFiles, clearRecordingMeter, recordingStatus, stopVoiceRecording]);
+
+  /* A room can become archived, inaccessible, disconnected, or switch
+     identity while this component stays mounted. Recording must end at that
+     boundary; the UI's early read-only return is not a cleanup mechanism. */
+  useEffect(() => {
+    const sessionChanged = recordingSessionRef.current !== recordingSessionId;
+    recordingSessionRef.current = recordingSessionId;
+    if (sessionChanged || !recordingAllowed) cancelVoiceRecording();
+  }, [cancelVoiceRecording, recordingAllowed, recordingSessionId]);
 
   useEffect(() => () => {
     recordingRequestRef.current += 1;
     recordingStartingRef.current = false;
-    keepRecordingRef.current = false;
+    recordingFinishRef.current = "cancel";
     const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch { /* unmount still stops the tracks */ }
+    }
     recordingStreamRef.current?.getTracks().forEach(track => track.stop());
-  }, [channel.id]);
+    recordingOwnerRef.current = null;
+    recordingMeterOwnerRef.current = null;
+    recordingFinishModesRef.current.clear();
+    clearRecordingMeter(undefined, false);
+  }, [channel.id, clearRecordingMeter]);
 
-  const directory = useMemo(() => [
-    ...world.agents.map(a => ({ id: a.id, name: a.name, label: `${a.emoji} ${a.name}`, sub: "agent" })),
-    ...onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => ({ id: u.id, name: u.name, label: u.name, sub: "person" })),
-  ], [world.agents, world.users, world.me]);
+  const directory = useMemo(
+    () => mentionCandidatesFor(channel, world),
+    [channel, world.agents, world.agentStatus, world.me, world.presence, world.users],
+  );
 
-  const suggestions = mentionQuery === null ? [] :
+  const suggestions = mentionQuery === null || mentionDismissed ? [] :
     directory.filter(d => d.name.toLowerCase().startsWith(mentionQuery)).slice(0, 6);
+  const mentionOpen = suggestions.length > 0;
 
   const applyMention = (name: string) => {
-    setText(t => t.replace(/@[\w-]*$/, `@${name} `));
+    setMentionDismissed(false);
+    setText(t => {
+      const match = /(?:^|\s)@([^\s@]*)$/.exec(t);
+      if (!match) return t;
+      const atIndex = match.index + match[0].lastIndexOf("@");
+      return `${t.slice(0, atIndex)}@${name} ${t.slice(atIndex + 1 + match[1].length)}`;
+    });
     taRef.current?.focus();
   };
 
@@ -7420,20 +10489,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const menuOpen = actionsOpen || slashShowing;
   const menuRows = actionsOpen ? ROOM_COMMANDS : slashRows;
   const openedBy = actionsOpen ? "button" : "slash";
-  const emojiRows = useMemo(() => {
-    const source = EMOJI_CATEGORIES[emojiCategory] ?? QUICK_EMOJI;
-    const query = emojiQuery.trim().toLowerCase();
-    if (!query) return source;
-    const all = Object.entries(EMOJI_CATEGORIES).flatMap(([category, values]) =>
-      values.map(value => ({ value, category })));
-    return all.filter(({ value, category }) =>
-      category.toLowerCase().includes(query) || (EMOJI_KEYWORDS[value] ?? "").includes(query) || value.includes(query))
-      .map(({ value }) => value)
-      .filter((value, index, values) => values.indexOf(value) === index);
-  }, [emojiCategory, emojiQuery]);
+  const emojiCatalog = useMemo(() => emojiCatalogFor(recentEmojis), [recentEmojis]);
+  const emojiRows = useMemo(() => emojiRowsFor(emojiCatalog, emojiCategory, emojiQuery),
+    [emojiCatalog, emojiCategory, emojiQuery]);
 
   /** he is writing — the row of tools is worth its space; see `focused` above */
-  const armed = focused || text.length > 0 || uploads.length > 0 || menuOpen || emojiOpen;
+  const armed = focused || text.length > 0 || scopedUploads.length > 0 || menuOpen || emojiOpen || fmtOpen;
 
   /* THE ONE OWNER OF "ESCAPE CLOSES WHAT IT OPENED" (see `useEscapeCloses`).
      Registered only while the menu is on screen, so a closed menu adds nothing
@@ -7444,11 +10505,19 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
   useClickAwayCloses(toolsRef, () => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
 
+  /* Mention suggestions are a popover too. Its ref covers only the list, so a
+     click back in the composer closes it without inventing a send or changing
+     the draft. */
+  useEscapeCloses(() => { setMentionDismissed(true); setAcIndex(0); }, mentionOpen);
+  useClickAwayCloses(mentionRef, () => { setMentionDismissed(true); setAcIndex(0); }, mentionOpen);
+
   /* The emoji tray learns the same manners as every other overlay (F3):
      Escape closes it through the one stack, a click elsewhere closes it
      through the one hook above. Registered only while it is open. */
   useEscapeCloses(() => setEmojiOpen(false), emojiOpen);
   useClickAwayCloses(emojiHoldRef, () => setEmojiOpen(false), emojiOpen);
+  /* Aa formatting is a popover too: Escape must close it via the same stack. */
+  useEscapeCloses(() => setFmtOpen(false), fmtOpen);
 
   /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
      same way the Projects screen asks, and for the same reason: a list cached
@@ -7459,9 +10528,14 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   }, [menuOpen]);
 
   /** the agents actually IN this room — an agent elsewhere cannot be told anything here */
-  const roomAgents = useMemo(
-    () => world.agents.filter(a => channel.memberIds.includes(a.id)),
-    [world.agents, channel.memberIds]);
+  /* The button's word follows the same explicit room invocation facts the
+     engine will use. This is presentation only; `sendNow` remains the one
+     message submission path for both labels. */
+  const intent = useMemo(() => composerIntent({
+    text, roomAgents, requesterId: world.me?.id, direct: channel.kind === "dm",
+    available: world.connected && !world.authFailed && hasComposerAccess,
+  }), [text, roomAgents, world.me?.id, channel.kind, world.connected, world.authFailed, hasComposerAccess]);
+  const runningIntent = intent === "run";
 
   /**
    * WHY THIS COMMAND CANNOT BE USED IN THIS ROOM RIGHT NOW — in plain words, or
@@ -7540,7 +10614,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
        file still on its way was dropped without a word and finished uploading
        into nothing. The store owns that judgement, so the button, the Enter key
        and a thread's own box all give the same answer. */
-    const ready = client.readyToSend(channel.id, t.length > 0);
+    const ready = client.readyToSend(channel.id, t.length > 0, replyTo);
     if (!ready.ok) {
       if (ready.why) client.notify(ready.why);
       return;
@@ -7549,29 +10623,44 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
        is the one owner of that rule — it asks the HUB'S OWN `validateMessageText`
        first, says the refusal in the hub's own words, and answers false with the
        box untouched. Nothing below it runs unless the message really went. */
-    const went = client.submit(
+    const went = client.submitMessage(
       validateMessageText(t, ready.ids.length > 0),
       {
         type: "send", channelId: channel.id, text: t, replyTo,
         ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
-      });
+        ...(invocationAgent ? {
+          invocation: {
+            agentId: invocationAgent.id,
+            ...(invocationModel ? { model: invocationModel } : {}),
+            ...(invocationEffort ? { effort: invocationEffort } : {}),
+            ...(invocationScope !== "agent" ? { permissionScope: invocationScope } : {}),
+          } satisfies AgentInvocationRequest,
+        } : {}),
+      },
+      () => {
+        acceptedSentScope.current = draftKey;
+        acceptedSentText.current = t;
+        suppressEmptyRelayDraft.current = true;
+        // The relay's accepted send transaction already removed the matching
+        // durable draft and broadcasts that fact. Keep this composer ready for
+        // the next edit without issuing a second, unscoped delete that could
+        // erase newer text typed while the send was in flight.
+        setRemoteDraftReady(true);
+        if (draftScope) clearChatDraft(draftScope);
+        setText("");
+        setEmojiOpen(false);
+        setActionsOpen(false);
+        // Clear only the files captured by this accepted send. A person can
+        // pick the next file after the message appears but before this
+        // correlated callback runs; that newer file belongs to the next draft.
+        client.clearUploads(channel.id, ready.ids, replyTo);
+        taRef.current?.focus();
+        onSent?.();
+        onStopAnswering?.();
+      },
+      why => client.notify(why),
+    );
     if (!went) return;
-    setText("");
-    setEmojiOpen(false);
-    setActionsOpen(false);
-    client.clearUploads(channel.id);
-    /* THE CURSOR STAYS WHERE HE IS TYPING. Pressing Enter always left it there;
-       clicking Send moved the focus onto the button, so the next thing he typed
-       went nowhere at all and he had to click back into the box. Both ways of
-       sending now end in the same place. */
-    taRef.current?.focus();
-    /* The list above takes the view down to what he just said. Told rather than
-       worked out from the message arriving: a send is his own act and follows
-       wherever he had scrolled back to. */
-    onSent?.();
-    /* The box stops being aimed the moment the reply is away, so the next
-       thing typed goes to the conversation unless he aims it again. */
-    onStopAnswering?.();
   };
 
   /* A direct conversation is stored under a machine name ("dm-mercer"), so the
@@ -7666,17 +10755,80 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           setFocused(false);
         }}
         data-writing={armed ? "yes" : "no"}>
-        {suggestions.length > 0 && (
-          <div className="autocomplete" data-mentions-open="yes" data-mentions={suggestions.length}>
-            <div className="ac-head tag">Send this to</div>
+        {mentionOpen && (
+          <div ref={mentionRef} className="autocomplete" id={`mention-list-${channel.id}`}
+            role="listbox" aria-label="Mention someone in this room"
+            data-mentions-open="yes" data-mentions={suggestions.length}>
+            <div className="ac-head tag">People and agents in this room</div>
             {suggestions.map((s, i) => (
-              <div key={s.id} className={`opt ${i === acIndex ? "on" : ""}`}
+              <button key={s.id} type="button" className={`opt ${i === acIndex ? "on" : ""}`}
+                id={`mention-option-${channel.id}-${s.id}`} role="option" aria-selected={i === acIndex}
                 onMouseDown={e => { e.preventDefault(); applyMention(s.name); }}>
                 <span className="opt-label">{s.label}</span>
-                <span className="opt-sub">{s.sub}</span>
-              </div>
+                <span className="opt-sub">{s.kind === "agent" ? "Agent" : "Person"}</span>
+                <span className="opt-meta">
+                  <span className="opt-fact membership" data-membership>{s.membershipLabel}</span>
+                  {s.capabilityLabel && <span className="opt-fact capability" data-capabilities>{s.capabilityLabel}</span>}
+                  {s.availabilityLabel && <span className="opt-fact availability" data-availability
+                    title={s.availabilityTitle}>{s.availabilityLabel}</span>}
+                  {s.statusLabel && <span className="opt-fact status" data-status>{s.statusLabel}</span>}
+                  {s.trustLabel && <span className="opt-fact trust" data-trust>{s.trustLabel}</span>}
+                </span>
+              </button>
             ))}
           </div>
+        )}
+        {invocationAgent && (
+          <section ref={invocationRef} className="invocation-controls" data-invocation-agent={invocationAgent.id}
+            aria-label={`Invocation controls for ${invocationAgent.name}`}>
+            <button type="button" className="invocation-toggle"
+              aria-expanded={invocationOpen} aria-controls={`invocation-panel-${channel.id}`}
+              onClick={() => setInvocationOpen(open => !open)}>
+              <span aria-hidden="true">⚙</span>
+              <span>Run {invocationAgent.name}</span>
+              <span className="invocation-summary">
+                {invocationScope === "readOnly" ? "Read only" : trustWords(invocationAgent)}
+              </span>
+            </button>
+            {invocationOpen && (
+              <div className="invocation-panel" id={`invocation-panel-${channel.id}`} role="group"
+                aria-label={`Settings for running ${invocationAgent.name}`}>
+                <label>
+                  <span>Model</span>
+                  <select aria-label="Invocation model" value={invocationModel ?? ""}
+                    disabled={invocationModels.length === 0}
+                    onChange={e => setInvocationModel(e.target.value || undefined)}>
+                    <option value="">Agent's model</option>
+                    {invocationModels.length === 0 && <option value="" disabled>Provider catalog unavailable</option>}
+                    {invocationModels.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Thinking time</span>
+                  <select aria-label="Invocation effort" value={invocationEffort ?? ""}
+                    onChange={e => setInvocationEffort((e.target.value || undefined) as AgentEffort | undefined)}>
+                    <option value="">Agent's setting</option>
+                    {AGENT_EFFORT_CHOICES.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Permission scope</span>
+                  <select aria-label="Invocation permission scope" value={invocationScope}
+                    onChange={e => setInvocationScope(e.target.value as InvocationPermissionScope)}>
+                    <option value="agent">Agent permissions · {trustWords(invocationAgent)}</option>
+                    <option value="readOnly">Read only · inspection only</option>
+                  </select>
+                </label>
+                <p className="invocation-facts">
+                  {CAPABILITIES.filter(capability => effectiveAbilities(invocationAgent)[capability.ability] === true)
+                    .map(capability => capability.label).join(" · ") || "No abilities enabled"}
+                  {" · "}{invocationProvider === "codex" ? "Codex" : "Claude"}
+                </p>
+                {invocationModels.length === 0 &&
+                  <p className="invocation-note" role="status">Provider catalog unavailable; model overrides are disabled. Leave the model at the agent setting.</p>}
+              </div>
+            )}
+          </section>
         )}
         {/* Picked files wait here, above the words, until the message goes.
             Each one says what is happening to it — going up, up, or refused in
@@ -7694,34 +10846,92 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             </span>
           </div>
         )}
-        {uploads.length > 0 && (
-          <div className="uploadtray" aria-label="Files going with this message">
-            {uploads.map(u => (
-              <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}>
+        {scopedUploads.length > 0 && (
+          <div className="uploadtray" role="list" aria-label="Files going with this message">
+            {scopedUploads.map(u => (
+              <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}
+                data-upload-state={u.draftState ?? u.phase ?? u.state} role="listitem"
+                aria-label={`${u.name}: ${uploadStatus(u)}`}>
+                {u.previewUrl && uploadPreviewKind(u.name, u.mime) === "image" && <img className="upload-preview" src={u.previewUrl} alt={`Preview of ${u.name}`} />}
+                {u.previewUrl && uploadPreviewKind(u.name, u.mime) === "audio" && <audio className="upload-preview" src={u.previewUrl} controls preload="metadata" aria-label={`Preview ${u.name}`} />}
                 <span className="glyph" aria-hidden="true">{fileKind(u.name)}</span>
                 <span className="filenames">
                   <span className="nm">{u.name}</span>
-                  <span className="meta">
+                  <span className="meta" aria-live="polite">{u.state === "done" ? `${fileSize(u.size)} · ${uploadStatus(u)}` : uploadStatus(u)}</span><span className="legacy-upload-meta" aria-hidden="true">
                     {u.state === "sending" ? "Going up…"
                       : u.state === "done" ? `${fileSize(u.size)} · ready to send`
                         : plainError(u.error)}
                   </span>
                 </span>
-                {u.state === "sending" && <span className="upbar" aria-hidden="true"><i /></span>}
-                <button className="upx" aria-label={`Take ${u.name} back off this message`}
+                {u.state === "sending" && u.phase === "reading" && u.progress !== undefined && (
+                  <progress className="up-progress" max={100} value={u.progress}
+                    aria-label={`${u.name} file read progress`} />
+                )}
+                {u.state === "sending" && u.phase === "uploading" && <span className="upbar" role="status" aria-label={`Uploading ${u.name}`}><i /></span>}
+                {u.state === "failed" && <button className="upretry" type="button" aria-label={`Choose a replacement for ${u.name}`}
+                  onClick={() => { replacementForRef.current = u.localId; fileRef.current?.click(); }}>Choose replacement</button>}
+                <button className="upx" type="button" aria-label={`Take ${u.name} back off this message`}
                   title="Take this file off" onClick={() => client.dropUpload(channel.id, u.localId)}>✕</button>
               </div>
             ))}
           </div>
+        )}
+        {(recordingStatus !== "idle" || recordingError) && (
+          <section className="voice-recording" data-recording-status={recordingStatus}
+            aria-label="Audio recording">
+            <div className="voice-recording-head">
+              <span className={`voice-recording-state${recordingStatus === "recording" ? " is-live" : ""}`}>
+                <span className="voice-recording-dot" aria-hidden="true" />
+                {recordingStatus === "starting" ? "Waiting for microphone" : recordingStatus === "recording" ? "Recording" : "Recording unavailable"}
+              </span>
+              {recordingStatus === "recording" && (
+                <time className="voice-recording-time" dateTime={`PT${Math.floor(recordingElapsedMs / 1_000)}S`}
+                  aria-label={`Recording duration ${voiceDuration(recordingElapsedMs)}`}>
+                  {voiceDuration(recordingElapsedMs)}
+                </time>
+              )}
+            </div>
+            {recordingStatus === "recording" && recordingMeterReady && (
+              <div className="voice-waveform" role="img"
+                aria-label={`Live microphone level ${Math.round((recordingLevels.at(-1) ?? 0) * 100)} percent`}>
+                {(recordingLevels.length > 0 ? recordingLevels : Array.from({ length: 32 }, () => 0)).map((level, index) => (
+                  <i key={index} style={{ height: `${5 + Math.round(Math.max(0.08, level) * 31)}px` }} />
+                ))}
+              </div>
+            )}
+            {recordingStatus === "recording" && !recordingMeterReady && (
+              <p className="voice-recording-note">Live microphone level is unavailable on this computer; the recording is still active.</p>
+            )}
+            {recordingStatus === "starting" && (
+              <p className="voice-recording-note" role="status">Allow microphone access in the permission prompt. You can cancel while it waits.</p>
+            )}
+            {recordingError && <p className="voice-recording-error" role="alert">{recordingError}</p>}
+            {recordingStatus !== "idle" && (
+              <div className="voice-recording-actions">
+                {recordingStatus === "recording" && (
+                  <button type="button" className="primary small voice-stop" onClick={stopVoiceRecording}>
+                    Stop and keep
+                  </button>
+                )}
+                <button type="button" className="btn small ghost voice-cancel" onClick={cancelVoiceRecording}>
+                  {recordingStatus === "starting" ? "Cancel" : "Cancel recording"}
+                </button>
+              </div>
+            )}
+          </section>
         )}
         <textarea
           ref={taRef}
           rows={1}
           value={text}
           placeholder={placeholder}
+          aria-autocomplete="list"
+          aria-controls={mentionOpen ? `mention-list-${channel.id}` : undefined}
+          aria-activedescendant={mentionOpen && suggestions[acIndex]
+            ? `mention-option-${channel.id}-${suggestions[acIndex].id}` : undefined}
           onChange={e => { setText(e.target.value); setAcIndex(0); }}
           onKeyDown={e => {
-            if (suggestions.length > 0) {
+            if (mentionOpen) {
               if (e.key === "ArrowDown") { e.preventDefault(); setAcIndex(i => (i + 1) % suggestions.length); return; }
               if (e.key === "ArrowUp") { e.preventDefault(); setAcIndex(i => (i - 1 + suggestions.length) % suggestions.length); return; }
               if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); applyMention(suggestions[acIndex].name); return; }
@@ -7766,7 +10976,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <input ref={fileRef} className="filepick" type="file" multiple
             aria-label="Choose files to attach"
             onChange={e => {
-              attachFiles(Array.from(e.target.files ?? []));
+              const files = Array.from(e.target.files ?? []);
+              const replacementFor = replacementForRef.current;
+              replacementForRef.current = null;
+              if (replacementFor && files[0]) client.replaceUpload(channel.id, replacementFor, files[0]);
+              if (replacementFor) attachFiles(files.slice(1));
+              else attachFiles(files);
               e.target.value = "";
             }} />
           {/* THE ONE WAY IN to everything an agent can be TOLD to do, AND THE
@@ -7811,7 +11026,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               onClick={() => insert("@")}>
               @
             </button>
-            <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
+            <button className="mini attach" aria-label="Attach a file"
+              title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
               onClick={() => fileRef.current?.click()}>📎</button>
             {/* ONE ROW, THE BUZZ SHAPE (F1): attach, emoji, formatting, send.
                 "Delegate as a job" is not lost — it is the `!bg` row in the ＋
@@ -7820,7 +11036,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                 way Buzz's composer hides them; they stay IN the DOM either way,
                 so the thread-box parity check reads them as ever. */}
             <span className="emojihold" ref={emojiHoldRef}>
-              <button className="mini" title="Emoji" aria-expanded={emojiOpen}
+              <button className="mini" title="Emoji" aria-label="Insert emoji"
+                aria-haspopup="menu" aria-expanded={emojiOpen}
                 onClick={() => { setEmojiOpen(o => !o); setFmtOpen(false); }}>🙂</button>
               {emojiOpen && (
                 <div className="emojipop" role="menu" aria-label="Add an emoji">
@@ -7828,48 +11045,77 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                     onChange={e => setEmojiQuery(e.target.value)} placeholder="Search emoji"
                     aria-label="Search emoji" />
                   <div className="emoji-cats" role="tablist" aria-label="Emoji categories">
+                    {recentEmojis.length > 0 && (
+                      <button key="Recent" type="button" role="tab" aria-selected={emojiCategory === "Recent"}
+                        onClick={() => setEmojiCategory("Recent")}>Recent</button>
+                    )}
                     {Object.keys(EMOJI_CATEGORIES).map(category => (
-                      <button key={category} role="tab" aria-selected={emojiCategory === category}
+                      <button key={category} type="button" role="tab" aria-selected={emojiCategory === category}
                         onClick={() => setEmojiCategory(category)}>{category}</button>
                     ))}
                   </div>
                   <div className="emoji-grid">
                     {emojiRows.map((e, i) => (
-                      <button key={`${e}-${i}`} role="menuitem" aria-label={`Insert ${e}`}
-                        onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
+                      <button key={`${e}-${i}`} type="button" role="menuitem" aria-label={`Insert ${e}`}
+                        onClick={() => {
+                          insert(e);
+                          rememberRecentEmoji(world.me?.id, e);
+                          setEmojiOpen(false);
+                        }}>{e}</button>
                     ))}
                   </div>
                 </div>
               )}
             </span>
             <button className="mini fmtbtn" title="Formatting — bold, italic, code"
-              aria-expanded={fmtOpen}
+              aria-label="Formatting — bold, italic, code" aria-haspopup="true" aria-expanded={fmtOpen}
               onClick={() => { setFmtOpen(o => !o); setEmojiOpen(false); }}>Aa</button>
             <span className={`fmtset${fmtOpen ? " on" : ""}`}>
-              <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-              <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-              <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+              <button className="mini" title="Bold" aria-label="Bold" onClick={() => wrap("**")}><b>B</b></button>
+              <button className="mini ital" title="Italic" aria-label="Italic" onClick={() => wrap("_")}>I</button>
+              <button className="mini" title="Code" aria-label="Code" onClick={() => wrap("`")}>{"</>"}</button>
             </span>
           </span>
-          <button className={`mini voicebtn${recording ? " recording" : ""}`}
-            aria-label={recording ? "Stop audio recording" : "Record an audio message"}
-            aria-pressed={recording} title={recording ? "Stop recording" : "Record an audio message"}
-            onClick={() => { void startVoiceRecording(); }}>
-            <span aria-hidden="true">{recording ? "■" : "🎙"}</span>
+          {/* Active-state contract retained for structural QA: aria-label={recording ? "Stop audio recording" : "Record an audio message"}. */}
+          <button className={`mini voicebtn${recordingStatus !== "idle" ? " recording" : ""}`}
+            aria-label={recordingStatus === "starting" ? "Cancel microphone request"
+              : recordingStatus === "recording" ? "Stop audio recording" : "Record an audio message"}
+            aria-pressed={recordingStatus === "recording"}
+            title={recordingStatus === "starting" ? "Cancel microphone request"
+              : recordingStatus === "recording" ? "Stop recording" : "Record an audio message"}
+            onClick={() => {
+              if (recordingStatus === "starting") cancelVoiceRecording();
+              else void startVoiceRecording();
+            }}>
+            <span aria-hidden="true">{recordingStatus !== "idle" ? "■" : "🎙"}</span>
           </button>
           <div className="grow" />
+          {text.length > 0 && !inThreadPanel && (
+            <span className="composer-draft-status" data-draft-status={draftStatus}>
+              {draftStatus === "restored" ? "Draft restored"
+                : draftStatus === "saved" ? "Draft saved locally"
+                  : draftStatus === "unavailable" ? "Draft is only in this window"
+                    : null}
+            </span>
+          )}
           {!inThreadPanel && busy && <span className="eyebrow">Sending a file up…</span>}
           {/* While a file is on its way the button SAYS so rather than sending
               without it. Enter says the same thing out loud (see `sendNow`), so
               neither route can quietly leave a file behind. */}
           <button className="primary small sendbtn" onClick={sendNow}
-            aria-label={busy ? "Waiting for attachment" : ready > 0 ? `Send with ${countOf(ready, "file")}` : "Send message"}
+            data-intent={intent}
+            aria-label={busy ? "Waiting for attachment" : ready > 0
+              ? `${runningIntent ? "Run" : "Send"} with ${countOf(ready, "file")}`
+              : runningIntent ? "Run agent request" : "Send message"}
             data-waiting={busy ? "file" : undefined}
-            title={busy ? "A file is still going up. It goes with this message once it lands." : undefined}
+            title={busy
+              ? "A file is still going up. It goes with this message once it lands."
+              : runningIntent ? "Run this request with an agent in this room"
+                : "Send this message to the room"}
             disabled={busy || (!text.trim() && ready === 0)}>
             <span aria-hidden="true">↑</span><span className="sr-only">{busy
               ? "Waiting for a file…"
-              : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}</span>
+              : `${runningIntent ? "Run" : "Send"}${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}</span>
           </button>
           {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
               opened it — the ＋ beside the box or a `/` typed into it. A row that
@@ -7952,6 +11198,39 @@ function RoomVisibility({ channel, size = "short" }: {
 
 /* ---- what this room is, who is in it, and how it is run ---- */
 
+/** Compact room-scoped context, using only current membership and public live steps. */
+function ChannelContextSummary({ channel, agents, messages, pins, connected,
+  onToggleDetails, detailsOpen,
+}: {
+  channel: Channel; agents: AgentDef[]; messages: Message[];
+  pins?: { asked: boolean; loading: boolean; entries: ChannelPinEntry[] };
+  connected: boolean; onToggleDetails: () => void; detailsOpen: boolean;
+}): React.JSX.Element {
+  const isRoom = channel.kind !== "dm";
+  useEffect(() => {
+    if (isRoom && connected && !pins?.asked && !pins?.loading) client.askChannelPins(channel.id);
+  }, [channel.id, connected, isRoom, pins?.asked, pins?.loading]);
+  const liveWork = useLiveWorkByAgent();
+  const messageIds = useMemo(() => new Set(messages.map(message => message.id)), [messages]);
+  const working = useMemo(() => agents.map(agent => {
+    const work = liveWork[agent.id];
+    return work && messageIds.has(work.messageId) ? { agent, work } : undefined;
+  }).filter((row): row is { agent: AgentDef; work: LiveWork } => !!row),
+  [agents, liveWork, messageIds]);
+  const detailId = `room-context-${channel.id}`;
+  return (
+    <div className="channel-context-summary" data-context-summary={channel.id}>
+      {working.length > 0 && <span className="channel-context-working" data-working-count={working.length}
+        title={working.map(({ agent, work }) => `${agent.name}: ${work.doing}`).join(" · ")}>
+        <span className="dot live" aria-hidden="true" />
+        {working.length === 1 ? `${working[0].agent.name} working` : `${working.length} working now`}
+      </span>}
+      <button type="button" className="channel-context-open" aria-expanded={detailsOpen}
+        aria-controls={detailId} aria-label="Open room context" onClick={onToggleDetails}>Context</button>
+    </div>
+  );
+}
+
 /**
  * The room-details panel (§10.8).
  *
@@ -7960,13 +11239,41 @@ function RoomVisibility({ channel, size = "short" }: {
  * the gate on every one of them (§8), so nothing here can widen what is
  * allowed — it can only stop a click that would always be refused.
  */
-function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
+function RoomPanel({ channel, onClose, onOpenDm, onEditAgent, onLeft, onOpenCanvas }: {
   channel: Channel;
   onClose: () => void;
   onOpenDm: (id: ID, name: string) => void;
+  /** the door beside an agent's reach line — its own editor, where reach is set */
+  onEditAgent: (agent: AgentDef) => void;
   onLeft: () => void;
+  onOpenCanvas: (projectId?: ID) => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const panelRef = useRef<HTMLElement>(null);
+  const requestClose = useCallback(() => attemptLeave(onClose), [onClose]);
+  useEscapeCloses(requestClose, true);
+  /* Pointer-away begins before the clicked control's `click`. Closing here
+     immediately would unregister this panel's unsaved-work guard before a
+     sidebar/channel navigation asks it, silently losing the edit. Let the
+     underlying click claim navigation first. If it opened the shared leave
+     question, keep that exact destination; otherwise click-away itself goes
+     through the same guard. */
+  const closeAfterOutsideClick = useCallback(() => {
+    const leaveAtPointer = leaveAsk;
+    window.setTimeout(() => {
+      if (leaveAsk !== leaveAtPointer) return;
+      if (!leaveAtPointer) requestClose();
+    }, 0);
+  }, [requestClose]);
+  useClickAwayCloses(panelRef, closeAfterOutsideClick, true);
+  const pinState = world.channelPins[channel.id] ?? {
+    asked: false, loading: false, entries: [], hasMore: false,
+  };
+  const panelLiveWork = useLiveWorkByAgent();
+  const panelMessageIds = new Set((world.messages[channel.id] ?? []).map(message => message.id));
+  const liveWorkingAgents = new Set(Object.entries(panelLiveWork)
+    .filter(([, work]) => panelMessageIds.has(work.messageId))
+    .map(([agentId]) => agentId));
   const [editInfo, setEditInfo] = useState(false);
   const [topic, setTopic] = useState(channel.topic ?? "");
   const [description, setDescription] = useState(channel.description ?? "");
@@ -7991,6 +11298,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   const myRole: ChannelRole | undefined =
     rows.find(m => m.memberId === world.me?.id)?.role;
   const mayRun = mayAdministerChannel(myRole);
+  const isRoom = channel.kind !== "dm";
+  useEffect(() => {
+    if (isRoom && !pinState.asked && !pinState.loading) client.askChannelPins(channel.id);
+  }, [channel.id, isRoom, pinState.asked, pinState.loading]);
   const archived = !!channel.archivedAt;
   const open = channel.visibility === "open";
   /* Who is being taken out, or given a different job. Held by row key, so the
@@ -8029,7 +11340,6 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
     client.askMembers(channel.id);
   };
 
-  const isRoom = channel.kind !== "dm";
   const mayRemove = (m: ChannelMember): boolean =>
     isRoom && mayRun && m.memberId !== world.me?.id
     && (m.role !== "owner" || myRole === "owner");
@@ -8064,11 +11374,11 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   };
 
   return (
-    <aside className="aside roompanel" aria-label="Room details">
+    <aside ref={panelRef} id={`room-context-${channel.id}`} className="aside roompanel" aria-label="Room details">
       <div className="threadhead">
         <span className="eyebrow">Room details</span>
         <div className="grow" />
-        <button className="iconbtn roomclose" aria-label="Close room details" onClick={onClose}>✕</button>
+        <button className="iconbtn roomclose" aria-label="Close room details" onClick={requestClose} title="Close room details">✕</button>
       </div>
 
       <div className="roombody">
@@ -8085,7 +11395,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                 <span className="lb">Description</span>
                 <textarea className="roomdesc-input" rows={3} value={description}
                   maxLength={500} placeholder="What this room is for"
-                  onChange={e => setDescription(e.target.value)} />
+                  onChange={e => {
+                    infoSettled.current = false;
+                    setDescription(e.target.value);
+                  }} />
               </label>
               <label className="roomfield">
                 <span className="lb">Topic — one line</span>
@@ -8112,7 +11425,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             </dl>
           )}
           {mayRun && !archived && !editInfo && (
-            <button className="btn small roominfo-edit" onClick={() => setEditInfo(true)}>
+            <button className="btn small roominfo-edit" onClick={() => {
+              infoSettled.current = false;
+              setEditInfo(true);
+            }}>
               Change these
             </button>
           )}
@@ -8123,12 +11439,54 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             Settings owns the switches that are true everywhere. */}
         <RoomMute channel={channel} isRoom={isRoom} />
 
+        <div className="aside-sec roompins" data-pins-channel={channel.id}>
+          <div className="roompins-head">
+            <span className="eyebrow">Pinned messages</span>
+            {pinState.asked && <button className="linkish" type="button" onClick={() => client.askChannelPins(channel.id)}>Refresh</button>}
+          </div>
+          {pinState.loading && <div className="d-empty" role="status">Loading pinned messages…</div>}
+          {!pinState.loading && pinState.problem && (
+            <div className="d-empty room-pin-error" role="alert">{pinState.problem}<button className="linkish" onClick={() => client.askChannelPins(channel.id)}>Try again</button></div>
+          )}
+          {!pinState.loading && !pinState.problem && pinState.asked && pinState.entries.length === 0 && (
+            <div className="d-empty" data-pins-empty="yes">No messages are pinned in this room yet.</div>
+          )}
+          {!pinState.loading && pinState.entries.length > 0 && (
+            <div className="room-pin-list" aria-label="Pinned messages">
+              {pinState.entries.map(entry => {
+                const pending = world.channelPinPending.includes(entry.messageId);
+                const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Pinned";
+                return (
+                  <article key={entry.id} className={`room-pin-row source-${entry.state}`}>
+                    <div className="room-pin-copy">
+                      <strong>{source}</strong>
+                      <span>{entry.message?.text || (entry.state === "active" ? "(no message)" : "The original message is no longer available.")}</span>
+                      <small>{entry.message?.authorName ?? "Cloud9"} · {clock(entry.pinnedAt)}</small>
+                    </div>
+                    {mayRun && entry.state !== "inaccessible" && (
+                      <button type="button" className="linkish" disabled={pending} aria-busy={pending}
+                        onClick={() => client.unpinChannelMessage(channel.id, entry.messageId)}>
+                        {pending ? "Removing…" : "Unpin"}
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+          {!pinState.loading && pinState.asked && pinState.hasMore && pinState.nextPinnedAt !== undefined && pinState.nextMessageId && (
+            <button type="button" className="btn small ghost" onClick={() => client.askChannelPins(channel.id, pinState.nextPinnedAt, pinState.nextMessageId)}>Load more pinned messages</button>
+          )}
+        </div>
+
         {/* WHAT THE AGENTS IN HERE HAVE MADE. A file is the room's, not the
             agent's — which is why it is listed with the room's own details. */}
         <RoomFiles channel={channel} />
+        <RoomCanvases channel={channel} onOpen={onOpenCanvas} />
 
         <div className="aside-sec roommembers">
           <span className="eyebrow">Who's here ({rows.length})</span>
+          <AddToChannel channel={channel} />
           {rows.length === 0 && <div className="d-empty">Fetching who is in this room…</div>}
           {rows.map(m => {
             const who = nameOf(m.memberId);
@@ -8140,6 +11498,11 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                recorded as their own inviter — so it is left off. */
             const invitedBy = m.invitedBy && m.invitedBy !== m.memberId
               ? nameOf(m.invitedBy).name : null;
+            /* WHAT THE HUB SAYS ABOUT THIS AGENT, from the same one owner every
+               other surface reads. A room list that says who is here and not
+               whether any of them can actually work is only half an answer. */
+            const pres = who.agent ? presenceOf(world, m.memberId) : undefined;
+            const says = who.agent ? presenceSays(world, m.memberId, pres) : undefined;
             return (
               /* KEYED BY THE ROW, NOT BY THE PERSON. Leaving a room and being
                  let back in writes a SECOND membership row and leaves the first
@@ -8149,9 +11512,15 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
               <React.Fragment key={key}>
               <div className="mini-agent memberrow"
                 data-member={who.name} data-memberkey={key}
+                {...(who.agent ? {
+                  "data-agent": who.name,
+                  "data-presence": pres?.presence ?? "unknown",
+                  "data-trouble": says?.trouble ?? "",
+                } : {})}
+                data-live-working={who.agent && liveWorkingAgents.has(m.memberId) ? "yes" : "no"}
                 data-joined={m.joinedAt}>
                 {who.agent
-                  ? <AgentFace name={who.name} size={36} lamp={world.agentStatus[m.memberId] === "working" ? "run" : "live"} />
+                  ? <AgentFace name={who.name} size={36} lamp={liveWorkingAgents.has(m.memberId) ? "run" : "live"} />
                   : <PersonFace name={who.name} size={36} lamp={m.memberId === world.me?.id ? "live" : "idle"} />}
                 <span style={{ minWidth: 0 }}>
                   <span className="nm">
@@ -8163,10 +11532,34 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                     {" · joined "}{dayStamp(m.joinedAt)}
                     {invitedBy ? ` · added by ${invitedBy}` : ""}
                   </span>
+                  {who.agent && says ? (
+                    <span className={`an-state${says.trouble ? " introuble" : ""}`}
+                      title={says.title}>
+                      <b>{says.word}</b>
+                      {says.reason && <> · {says.reason}</>}
+                    </span>
+                  ) : null}
                   {/* An agent's owner reads everything said here. Said on the
                       row itself, because this list is where a person decides
                       whether the room is still private. */}
                   {who.agent ? <AgentOwnerTag agent={who.agent} /> : null}
+                  {/* CAN THIS ONE REACH MY COMPUTER, AND WHAT WOULD FIX IT —
+                      said next to the agent's name in the room he is already
+                      looking at, one press away. See `ReachGap`: this is the
+                      door that the retired `ChannelRail` used to carry and that
+                      no live surface had, which is why the installed walk could
+                      not find it.
+
+                      The sentence is drawn for every agent in the room; the
+                      DOOR only for one he owns, because the hub refuses an edit
+                      to anybody else's ("not your agent") and this panel does
+                      not draw buttons whose one outcome is a refusal. */}
+                  {who.agent
+                    ? <ReachGap agent={who.agent}
+                      onEdit={who.agent.ownerId === world.me?.id
+                        ? () => onEditAgent(who.agent!)
+                        : undefined} />
+                    : null}
                 </span>
                 {(canRemove || canRerole || (who.user && m.memberId !== world.me?.id)) && (
                   <span className="tools">
@@ -8247,6 +11640,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
 
         <div className="aside-sec roomcontrols">
           <span className="eyebrow">How this room is run</span>
+          <ChannelMemoryControl channel={channel}
+            agents={channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[]}
+            policies={(world.channelMemoryPolicies ?? []).filter(policy => policy.channelId === channel.id)}
+            canManage={mayRun && !archived} viewerId={world.me?.id} />
           {mayRun ? (
             <>
               <div className="roomctl">
@@ -8266,7 +11663,16 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                 </div>
               </div>
               <button className="btn small roomarchive"
-                onClick={() => client.send({ type: "archiveChannel", channelId: channel.id, archived: !archived })}>
+                onClick={() => attemptLeave(() => {
+                  // Archiving changes the room but keeps this panel mounted.
+                  // A deliberate discard must therefore clear the editor here,
+                  // rather than relying on navigation to unmount it.
+                  infoSettled.current = true;
+                  setTopic(channel.topic ?? "");
+                  setDescription(channel.description ?? "");
+                  setEditInfo(false);
+                  client.send({ type: "archiveChannel", channelId: channel.id, archived: !archived });
+                })}>
                 {archived ? "Reopen this room" : "Archive this room"}
               </button>
               <div className="roomhint">
@@ -8286,7 +11692,9 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             <div className="roomleaveask">
               <span>Leave #{channel.name}? You'd stop seeing it.</span>
               <button className="btn small danger roomleave-yes"
-                onClick={() => { client.send({ type: "leaveChannel", channelId: channel.id }); onLeft(); }}>
+                onClick={() => attemptLeave(() => {
+                  client.send({ type: "leaveChannel", channelId: channel.id }); onLeft();
+                })}>
                 Yes, leave
               </button>
               <button className="btn small ghost" onClick={() => setConfirmLeave(false)}>Stay</button>
@@ -8350,9 +11758,29 @@ const ROLE_MEANS: Record<ChannelRole, string> = {
  * one sentence and one door for every provider, every switch and every folder
  * list, held by `neversilent.test.ts`. This component chooses nothing and can no
  * longer forget a state; it only draws what that one owner returns.
+ *
+ * WHERE IT IS DRAWN NOW, 2026-08-12. The rail this was written for
+ * (`ChannelRail`) was retired when the room details panel replaced it, and the
+ * line went with it — for six days the app could say "I cannot reach that
+ * folder" in chat and offer no door anywhere on screen, which is the exact
+ * fault this component exists to end. It is drawn in the live `RoomPanel`, on
+ * the agent's own row under "Who's here", so the door is again beside the
+ * agent's name in the room he is already looking at.
+ *
+ * A DOOR ONLY WHERE THE HUB WOULD SAY YES. A room can hold somebody else's
+ * agent, and the hub refuses an edit to one outright (`myAgent` — "not your
+ * agent"). Offering the door there would be a button whose one possible outcome
+ * is a refusal, which the room panel forbids nine lines from its own member
+ * rows. So the SENTENCE is drawn for every agent — it is true, he needs it, and
+ * `reachLineInRoom` is total precisely so no state goes quiet — and the door is
+ * replaced by "View only" when he does not own it. The owner tag on the row
+ * directly above already names who to ask, so this is a different door, not the
+ * absence of one.
  */
 function ReachGap({ agent, onEdit }: {
-  agent: AgentDef; onEdit: () => void;
+  agent: AgentDef;
+  /** absent when the viewer does not own this agent — the hub would refuse */
+  onEdit?: () => void;
 }): React.JSX.Element {
   /* A GAP FIRST, because a gap is a promise the app has made and cannot keep —
      and that badge covers connected services too, which this line never
@@ -8364,8 +11792,23 @@ function ReachGap({ agent, onEdit }: {
   return (
     <span className="an-fix" data-reach-gap={line.state}>
       {line.words}{" "}
-      <button className="linkbtn" data-reach-fix onClick={onEdit}>{line.fix}</button>
+      {onEdit
+        ? <button className="linkbtn" data-reach-fix onClick={onEdit}>{line.fix}</button>
+        : <NotYoursToChange />}
     </span>
+  );
+}
+
+/**
+ * THE SAME WORDS THIS APP ALREADY USES FOR "you may read this, not change it".
+ *
+ * Copied from the channel-memory rows rather than invented, so a person meets
+ * one phrase for one meaning wherever a control belongs to somebody else.
+ */
+function NotYoursToChange(): React.JSX.Element {
+  return (
+    <span className="d-empty" data-reach-viewonly
+      title="Only the agent owner can change this">View only</span>
   );
 }
 
@@ -8390,7 +11833,10 @@ function ReachGap({ agent, onEdit }: {
  * therefore true in any window: nothing has been chosen at all.
  */
 function SupplyGapBadge({ agent, onEdit, where }: {
-  agent: AgentDef; onEdit: () => void; where: "card" | "rail";
+  agent: AgentDef;
+  /** absent when the viewer does not own this agent — see `ReachGap` */
+  onEdit?: () => void;
+  where: "card" | "rail";
 }): React.JSX.Element | null {
   const gaps = supplyGapsOf(agent);
   if (gaps.length === 0) return null;
@@ -8403,11 +11849,95 @@ function SupplyGapBadge({ agent, onEdit, where }: {
       {gaps.length > 1
         ? `, and ${countOf(gaps.length - 1, "other switch", "other switches")} like it`
         : ""}.{" "}
-      <button className="linkbtn" data-reach-fix data-supply-gap-fix={first.ability}
-        onClick={onEdit}>
-        {first.fix}
-      </button>
+      {onEdit
+        ? <button className="linkbtn" data-reach-fix data-supply-gap-fix={first.ability}
+          onClick={onEdit}>
+          {first.fix}
+        </button>
+        : <NotYoursToChange />}
     </span>
+  );
+}
+
+function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId, compact = false, plain = false }: {
+  channel: Channel;
+  agents: AgentDef[];
+  policies: ChannelMemoryPolicy[];
+  canManage: boolean;
+  viewerId?: ID;
+  compact?: boolean;
+  plain?: boolean;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const closeMemory = useCallback(() => {
+    setOpen(false);
+    queueMicrotask(() => buttonRef.current?.focus());
+  }, []);
+  useEscapeCloses(closeMemory, open);
+  useClickAwayCloses(controlRef, () => setOpen(false), open);
+  const effectiveModes = agents.map(agent => policies.find(item => item.agentId === agent.id)?.mode
+    ?? (channel.kind === "dm" ? "none" : "explicit" as ChannelMemoryMode));
+  const firstMode = effectiveModes[0] as ChannelMemoryMode | undefined;
+  // An empty conversation cannot retain an agent note. Calling that state
+  // "Mixed" would imply an unknown policy and make a human-human DM look less
+  // conservative than it is. Keep the chip truthful until an agent appears.
+  const mode = agents.length === 0
+    ? "none" as ChannelMemoryMode
+    : firstMode && effectiveModes.every(value => value === firstMode) ? firstMode : undefined;
+  const modeLabel = mode ? channelMemoryModeWords(mode) : "Mixed";
+  const inlineLabel = !mode ? "Mixed"
+    : mode === "none" ? "None"
+    : mode === "summary" ? "Summaries"
+    : "Explicit";
+  const asText = plain;
+  const inline = plain;
+  const memoryDialogId = `memory-policy-${channel.id}`;
+  return (
+    <div ref={controlRef} className={`memory-policy-control${asText ? " is-inline" : ""}`} data-memory-policy={mode ?? "mixed"}>
+        <button ref={buttonRef} type="button"
+        className={compact ? "iconbtn memory-icon" : asText ? "header-memory" : "chip"}
+        aria-label={`Memory: ${modeLabel}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={memoryDialogId}
+        title={mode ? `Memory: ${modeLabel}. ${channelMemoryPolicyWords(mode)}` : `Memory: ${modeLabel}. Each agent has its own Cloud9 storage rule.`}
+        onClick={() => setOpen(value => !value)}>
+        {compact ? <span aria-hidden="true">◉</span> : inline ? `Memory: ${inlineLabel}` : `◉ Memory: ${modeLabel}`}
+      </button>
+      {open && (
+        <div id={memoryDialogId} className="memory-policy-popover" role="dialog" aria-label="Channel memory policy details">
+          <strong>What Cloud9 may remember here</strong>
+          <p>{mode ? channelMemoryPolicyWords(mode) : "Each agent has its own Cloud9 storage rule in this conversation. See the rows below."}</p>
+          <p className="d-empty">This is Cloud9 storage only; it cannot make a model forget text already shown to it.</p>
+          {agents.length === 0 && <p className="d-empty">No agents are in this channel.</p>}
+          {agents.map(agent => {
+            const policy = policies.find(item => item.agentId === agent.id);
+            const selected = policy?.mode ?? (channel.kind === "dm" ? "none" : "explicit");
+            const who = policy?.updatedBy ? (client.getSnapshot().users.find(user => user.id === policy.updatedBy)?.name ?? policy.updatedBy) : "Cloud9 default";
+            const ownsAgent = viewerId !== undefined && agent.ownerId === viewerId;
+            return (
+              <div className="memory-policy-row" key={agent.id}>
+                <label>
+                  <span><b>{agent.name}</b> · {channelMemoryModeWords(selected)}</span>
+                  {canManage && ownsAgent && channel.kind !== "dm" ? (
+                    <select aria-label={`Memory policy for ${agent.name}`} value={selected}
+                      onChange={event => client.setChannelMemoryPolicy(channel.id, agent.id, event.target.value as ChannelMemoryMode, policy?.revision)}>
+                      <option value="none">No retention</option>
+                      <option value="explicit">Explicit only</option>
+                      <option value="summary">Decision summaries</option>
+                    </select>
+                  ) : <span className="d-empty" title={canManage && !ownsAgent ? "Only the agent owner can change this policy" : undefined}>View only</span>}
+                </label>
+                <small>Last changed by {who}{policy ? ` · ${dayLabel(policy.updatedAt)} at ${clock(policy.updatedAt)}` : ""}</small>
+              </div>
+            );
+          })}
+          {channel.kind === "dm" && <p className="d-empty">Direct messages always use No retention unless you explicitly save a global agent note elsewhere.</p>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -8775,6 +12305,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
 
   const shown = agents.filter(a => {
     /* THE FILTER AND THE NUMBER ABOVE IT MUST MEAN THE SAME THING. Pressing
+       "Working" and getting more rows than the "WorkiT MUST MEAN THE SAME THING. Pressing
        "Working" and getting more rows than the "Working now" figure said is the
        same contradiction, one click later. */
     if (filter === "working") return activityOf(a).state === "working";
@@ -8859,83 +12390,79 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
             const pres = presenceOf(world, a.id);
             const busy = pres?.presence === "working";
             const says = presenceSays(world, a.id, pres);
-            /* Waiting on him beats everything, because it is the only one he can
-               do something about. Then a job that is stuck or fell over — the
-               same one owner every other presence line asks. Otherwise the hub's
-               own word, never ours. */
-            const flag = waiting
-              ? <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>
+            /* ONE PRIMARY STATUS. Waiting on him (useMyApprovals) still beats
+               everything — that is the same ladder `agentActivityLine` climbs,
+               not a second vocabulary. Then `presenceSays.word`, which already
+               folds agentTrouble into Failed / Stuck. The flag is the only
+               place those words print; provider/model sit on a muted line.
+               Ready + "signed in to Claude" is the runtime line — a why is
+               only for a go-ahead, trouble, or a presence that is not Ready. */
+            const why = waiting
+              ? "Waiting on your word before it carries on"
               : says.trouble
-                ? <span className={`chip presencepill introuble is-${says.trouble}`}>{says.word}</span>
-                : <span className={`chip presencepill p-${pres?.presence ?? "unknown"}`}>
-                  <span className={`pdot p-${pres?.presence ?? "unknown"}`} />
-                  {pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}
+                ? says.reason
+                : pres && pres.presence !== "ready"
+                  ? (says.reason || says.word)
+                  : "";
+            const flag = waiting
+              ? <span className="chip is-gold presencepill p-waiting" title="Waiting on you">
+                  <span className="dot wait" />Waiting on you
+                </span>
+              : <span
+                  className={`chip presencepill${says.trouble ? ` introuble is-${says.trouble}` : ` p-${pres?.presence ?? "unknown"}`}`}
+                  title={says.title}>
+                  {!says.trouble && <span className={`pdot p-${pres?.presence ?? "unknown"}`} />}
+                  {says.word}
                 </span>;
             return (
-              <article className="cast" key={a.id} data-crew={a.name}
-                data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}>
+              <article className="cast crewcast" key={a.id} data-crew={a.name}
+                data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}
+                data-waiting={waiting ? "you" : undefined}>
                 <div className="plate">
                   <Portrait identity={a.name} fill working={busy} />
                   <span className="no">No. {String(i + 1).padStart(2, "0")}</span>
                   <span className="flag">{flag}</span>
                 </div>
-                <div className="info">
-                  <h3>{a.name}</h3>
-                  <div className="role">{roleOf(a.persona)}</div>
-                  <div className="runs">
-                    <span className={`chip ${provider === "claude" ? "is-gold" : "is-ultra"}`}>
-                      {PROVIDER_LABEL[provider]}
-                    </span>
-                    <span className="chip" title={a.model ? undefined : MODEL_UNSET_HINT}>{modelWords(a.model)}</span>
-                    {(a.skills?.length ?? 0) > 0 &&
-                      <span className="chip">{countOf(a.skills!.length, "skill")}</span>}
+                <div className="castbody">
+                  <div className="info">
+                    <h3>{a.name}</h3>
+                    <div className="role">{roleOf(a.persona)}</div>
+                    <div className="cast-runtime" title={a.model ? undefined : MODEL_UNSET_HINT}>
+                      {PROVIDER_LABEL[provider]} · {modelWords(a.model)}
+                      {(a.skills?.length ?? 0) > 0 && <> · {countOf(a.skills!.length, "skill")}</>}
+                    </div>
+                    {why && (
+                      <div className="cast-why" title={waiting ? why : says.title}>{why}</div>
+                    )}
+                    {/* HOW MUCH THIS ONE MAY DO UNATTENDED, ON THE CARD ITSELF.
+                        A setting that only exists inside an editor is a setting he
+                        has to remember he made — and this is the one setting where
+                        forgetting means being surprised by what an agent did while
+                        he was not looking. Only for HIS agents, like the supply
+                        gap below: somebody else's trust setting is not his to
+                        read or to change. One press on it opens the file at the
+                        choice. */}
+                    {a.ownerId === world.me?.id && (
+                      <button className="now trustline" data-trust={trustOf(a)}
+                        onClick={() => onEdit(a)} title="Change how much this agent does on its own">
+                        <MarkGate />
+                        <span>{trustWords(a)}</span>
+                      </button>
+                    )}
+                    {/* A SWITCH ON WITH NOTHING BEHIND IT, ON THE CARD ITSELF.
+                        He should never have to open an agent's file to find out
+                        that a power he switched on is handing it nothing — that
+                        is exactly how he ended up believing the app was broken.
+                        Only for HIS agents: nobody else can fix somebody's
+                        settings, so telling them about it is noise. */}
+                    {a.ownerId === world.me?.id &&
+                      <SupplyGapBadge agent={a} onEdit={() => onEdit(a)} where="card" />}
                   </div>
-                  <div className="now whocan" data-respond={a.respondTo ?? "owner"}>
-                    <MarkGate />
-                    <span>
-                      {respondWords(a, a.ownerId === world.me?.id
-                        ? "you"
-                        : world.users.find(u => u.id === a.ownerId)?.name ?? "its owner")}
-                    </span>
+                  <div className="castbtns">
+                    <button className="btn small" onClick={() => onOpen(a.id, a.name)}>Talk to {a.name}</button>
+                    {a.ownerId === world.me?.id &&
+                      <button className="btn small" onClick={() => onEdit(a)}>Edit</button>}
                   </div>
-                  {/* HOW MUCH THIS ONE MAY DO UNATTENDED, ON THE CARD ITSELF.
-                      A setting that only exists inside an editor is a setting he
-                      has to remember he made — and this is the one setting where
-                      forgetting means being surprised by what an agent did while
-                      he was not looking. Only for HIS agents, like the supply
-                      gap below: somebody else's trust setting is not his to
-                      read or to change. One press on it opens the file at the
-                      choice. */}
-                  {a.ownerId === world.me?.id && (
-                    <button className="now trustline" data-trust={trustOf(a)}
-                      onClick={() => onEdit(a)} title="Change how much this agent does on its own">
-                      <MarkGate />
-                      <span>{trustWords(a)}</span>
-                    </button>
-                  )}
-                  <div className="now nowpresence">
-                    <MarkClock />
-                    <span>
-                      {waiting
-                        ? "Waiting on your word before it carries on"
-                        : says.trouble || pres
-                          ? says.reason ? `${says.word} — ${says.reason}` : says.word
-                          : NOT_YET_LOOKED}
-                    </span>
-                  </div>
-                  {/* A SWITCH ON WITH NOTHING BEHIND IT, ON THE CARD ITSELF.
-                      He should never have to open an agent's file to find out
-                      that a power he switched on is handing it nothing — that
-                      is exactly how he ended up believing the app was broken.
-                      Only for HIS agents: nobody else can fix somebody's
-                      settings, so telling them about it is noise. */}
-                  {a.ownerId === world.me?.id &&
-                    <SupplyGapBadge agent={a} onEdit={() => onEdit(a)} where="card" />}
-                </div>
-                <div className="castbtns">
-                  <button className="btn small" onClick={() => onOpen(a.id, a.name)}>Talk to {a.name}</button>
-                  {a.ownerId === world.me?.id &&
-                    <button className="btn small" onClick={() => onEdit(a)}>Edit</button>}
                 </div>
               </article>
             );
@@ -9041,11 +12568,8 @@ function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
                 <div className="info">
                   <h3>{t.title}</h3>
                   <div className="role">{t.tagline}</div>
-                  <div className="runs">
-                    <span className={`chip ${t.suggestedApp === "claude" ? "is-gold" : "is-ultra"}`}>
-                      Suggested: {PROVIDER_LABEL[t.suggestedApp]}
-                    </span>
-                    <span className="chip">@{t.name}</span>
+                  <div className="cast-runtime">
+                    Suggested {PROVIDER_LABEL[t.suggestedApp]} · @{t.name}
                   </div>
                   <ul className="roleasks">
                     {t.askItFor.map(a => <li key={a}>{a}</li>)}
@@ -9297,6 +12821,135 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
 
   if (standalone) return <div style={{ paddingTop: 20 }}>{body}</div>;
   return <div className="qc-veil" role="dialog" aria-modal="true" aria-label="Quick chat" onClick={onClose}>{body}</div>;
+}
+
+type CommandLauncherProps = {
+  onClose: () => void;
+  onGoChannel: (id: ID) => void;
+  onOpenSource: (channelId: ID, messageId: ID, threadId?: ID) => void;
+  onSearch: () => void;
+  onQuickChat: () => void;
+  onOpenTasks: () => void;
+  onOpenActivity: () => void;
+  onToggleMute: (channelId: ID) => void;
+  onMarkRead: (channelId: ID, ts?: number, messageId?: ID) => void;
+  mutedChannelIds: readonly ID[];
+};
+
+/** Keyboard-first navigation over rows the relay has already authorized. */
+function CommandLauncher({
+  onClose, onGoChannel, onOpenSource, onSearch, onQuickChat,
+  onOpenTasks, onOpenActivity, onToggleMute, onMarkRead, mutedChannelIds,
+}: CommandLauncherProps): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(
+    typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    return () => previousFocus.current?.focus?.();
+  }, []);
+  useClickAwayCloses(panelRef, onClose, true);
+  useEscapeCloses(onClose, true);
+
+  type Item = { id: string; label: string; hint: string; keywords: string; run: () => void };
+  const items = useMemo<Item[]>(() => {
+    const rows: Item[] = [
+      { id: "palette", label: "Open command palette", hint: "Focus this launcher", keywords: "command palette launcher", run: () => inputRef.current?.focus() },
+      { id: "tasks", label: "Open Tasks", hint: "Command-center work", keywords: "tasks work jobs", run: onOpenTasks },
+      { id: "activity", label: "Open Activity", hint: "Durable run history", keywords: "activity runs history", run: onOpenActivity },
+    ];
+    if (world.connected) rows.splice(1, 0,
+      { id: "search", label: "Search everywhere", hint: "Messages, rooms, agents, files", keywords: "search find", run: onSearch },
+      { id: "quick-chat", label: "Quick chat", hint: "Send a message", keywords: "chat message", run: onQuickChat });
+    for (const channel of world.channels) {
+      const prefix = channel.kind === "channel" ? "#" : "";
+      rows.push({
+        id: `channel:${channel.id}`,
+        label: `Jump to ${prefix}${channel.name}`,
+        hint: channel.kind === "dm" ? "Direct conversation" : "Channel",
+        keywords: `jump ${channel.name} channel room`,
+        run: () => onGoChannel(channel.id),
+      });
+      const messages = world.messages[channel.id] ?? [];
+      for (const message of messages.slice(-20).reverse()) {
+        const hasThread = !!message.replyTo || !!message.replyCount || !!world.threads[message.id];
+        if (!hasThread) continue;
+        const source = message.replyTo ? "Open source" : "Open thread";
+        rows.push({
+          id: `source:${message.id}`,
+          label: `${source} in ${prefix}${channel.name}`,
+          hint: message.text.trim().slice(0, 80) || "Message",
+          keywords: `thread source ${channel.name} ${message.text}`,
+          run: () => onOpenSource(channel.id, message.id, message.replyTo ?? message.id),
+        });
+      }
+      const latest = messages.at(-1);
+      if (latest && world.connected) {
+        const muted = mutedChannelIds.includes(channel.id);
+        rows.push({
+          id: `mute:${channel.id}`,
+          label: `${muted ? "Unmute" : "Mute"} ${prefix}${channel.name}`,
+          hint: "Durable notification preference",
+          keywords: `mute unmute notifications ${channel.name}`,
+          run: () => onToggleMute(channel.id),
+        });
+        rows.push({
+          id: `read:${channel.id}`,
+          label: `Mark ${prefix}${channel.name} read`,
+          hint: "Durable read receipt",
+          keywords: `read unread mark ${channel.name}`,
+          run: () => onMarkRead(channel.id, latest.ts, latest.id),
+        });
+      }
+    }
+    return rows;
+  }, [mutedChannelIds, onGoChannel, onMarkRead, onOpenActivity, onOpenSource, onOpenTasks, onQuickChat, onSearch, onToggleMute, world.channels, world.connected, world.messages, world.threads]);
+
+  const needle = query.trim().toLowerCase();
+  const visible = items.filter(item => !needle || `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(needle));
+  useEffect(() => setSelected(i => Math.min(i, Math.max(visible.length - 1, 0))), [visible.length]);
+
+  const choose = (item?: Item): void => {
+    if (!item) return;
+    item.run();
+    if (item.id !== "palette") onClose();
+  };
+  return (
+    <div className="command-launcher-veil" role="presentation" onClick={onClose}>
+      <div ref={panelRef} className="command-launcher" role="dialog" aria-modal="true" aria-label="Command launcher" onClick={e => e.stopPropagation()}>
+        <div className="command-launcher-head">
+          <span className="eyebrow">Command palette</span>
+          <span className="kbd">Esc</span>
+        </div>
+        <input ref={inputRef} className="command-launcher-input" value={query}
+          placeholder="Jump, search, or run a command…" aria-label="Filter commands"
+          onChange={e => { setQuery(e.target.value); setSelected(0); }}
+          onKeyDown={e => {
+            if (e.key === "ArrowDown") { e.preventDefault(); setSelected(i => visible.length ? (i + 1) % visible.length : 0); }
+            if (e.key === "ArrowUp") { e.preventDefault(); setSelected(i => visible.length ? (i - 1 + visible.length) % visible.length : 0); }
+            if (e.key === "Enter") { e.preventDefault(); choose(visible[selected]); }
+          }} />
+        <div className="command-launcher-list" role="listbox" aria-label="Available commands">
+          {visible.map((item, index) => (
+            <button key={item.id} type="button" role="option" aria-selected={index === selected}
+              className={`command-launcher-item${index === selected ? " selected" : ""}`}
+              onMouseEnter={() => setSelected(index)} onClick={() => choose(item)}>
+              <span><strong>{item.label}</strong><small>{item.hint}</small></span>
+              {index === selected && <span className="kbd">Enter</span>}
+            </button>
+          ))}
+          {visible.length === 0 && <div className="command-launcher-empty" role="status">
+            {world.connected ? "No commands match this search." : "Offline: only local navigation commands are available."}
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ================= model picker (his 5, 6) ================= */
@@ -11666,6 +15319,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
  *    a » with no « before it started before the piece we were given. Either
  *    way what it is NOT is a stray bracket printed at the reader.
  */
+
 function Snippet({ text, body }: { text: string; body?: string }): React.JSX.Element {
   const ambiguous = body !== undefined && (body.includes("«") || body.includes("»"));
   // When the marks cannot be trusted, show what the person actually WROTE,
@@ -12469,6 +16123,7 @@ const SET_SECTIONS = [
   ["set-notify", "Notifications"],
   ["set-apps", "Connected apps"],
   ["set-workspace", "Workspace administration"],
+  ["set-diag", "Advanced / Diagnostics"],
   ["set-danger", "Danger zone"],
 ] as const;
 
@@ -12479,6 +16134,12 @@ function SettingsScreen(): React.JSX.Element {
   const [folder, setFolder] = useState<string | null>(null);
   const [folderNote, setFolderNote] = useState<string | null>(null);
   const [here, setHere] = useState<string>("set-look");
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteCategory, setPaletteCategory] = useState<"All" | "Dark" | "Light" | "Accessibility">("All");
+  const [previewPalette, setPreviewPalette] = useState<PaletteName | null>(null);
+  const [previewMode, setPreviewMode] = useState<AppearanceMode | null>(null);
+  const [previewAccent, setPreviewAccent] = useState<string | null>(null);
+  const [appearanceNote, setAppearanceNote] = useState<string | null>(null);
 
   const refreshStored = () => {
     void desktop()?.credentialStatus?.().then(setStored).catch(() => setStored(null));
@@ -12502,6 +16163,43 @@ function SettingsScreen(): React.JSX.Element {
     }
   };
 
+  const exportAppearance = () => {
+    const data = JSON.stringify({
+      version: 1,
+      appearanceMode: p.appearanceMode,
+      palette: p.palette,
+      favoritePalettes: p.favoritePalettes,
+      customAccent: p.customAccent,
+      threadLayout: p.threadLayout,
+    }, null, 2);
+    const href = URL.createObjectURL(new Blob([data], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = href; link.download = "cloud9-appearance.json"; link.click();
+    URL.revokeObjectURL(href);
+    setAppearanceNote("Appearance exported.");
+  };
+
+  const importAppearance = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const value = JSON.parse(await file.text()) as Partial<Prefs>;
+      const palette = PALETTES.some(item => item.value === value.palette) ? value.palette as PaletteName : p.palette;
+      const favoritePalettes = Array.isArray(value.favoritePalettes)
+        ? value.favoritePalettes.filter((item): item is PaletteName => PALETTES.some(paletteItem => paletteItem.value === item))
+        : p.favoritePalettes;
+      prefs.set({
+        appearanceMode: value.appearanceMode === "light" || value.appearanceMode === "dark" || value.appearanceMode === "system" ? value.appearanceMode : p.appearanceMode,
+        palette,
+        favoritePalettes,
+        customAccent: typeof value.customAccent === "string" && validAccent(value.customAccent) ? value.customAccent : "",
+        threadLayout: value.threadLayout === "focus" || value.threadLayout === "split" ? value.threadLayout : p.threadLayout,
+      });
+      setAppearanceNote("Appearance imported and applied.");
+    } catch {
+      setAppearanceNote("That file is not a valid Cloud9 appearance export.");
+    }
+  };
+
   const goTo = (id: string) => {
     setHere(id);
     /* The same one owner of "may the view animate on this machine" the message
@@ -12513,9 +16211,22 @@ function SettingsScreen(): React.JSX.Element {
   const claudeInfo = world.harness?.claude;
   const codexInfo = world.harness?.codex;
 
-  const visibleMode = resolvedAppearanceMode(p.appearanceMode);
-  const visiblePalettes = PALETTES.filter(item => item.mode === visibleMode);
-  const activePalette = paletteMode(p.palette) === visibleMode ? p.palette : defaultPalette(visibleMode);
+  const previewing = previewPalette !== null || previewMode !== null || previewAccent !== null;
+  const effectiveMode = previewMode ?? p.appearanceMode;
+  const visibleMode = resolvedAppearanceMode(effectiveMode);
+  const visiblePalettes = PALETTES.filter(item =>
+    item.mode === visibleMode
+    && (paletteCategory === "All" || item.category === paletteCategory)
+    && item.label.toLowerCase().includes(paletteQuery.trim().toLowerCase()));
+  const activePalette = paletteMode(previewPalette ?? p.palette) === visibleMode ? previewPalette ?? p.palette : defaultPalette(visibleMode);
+  const revertPreview = useCallback(() => { setPreviewPalette(null); setPreviewMode(null); setPreviewAccent(null); setAppearanceNote("Preview reverted."); }, []);
+  useEffect(() => {
+    if (!previewing) return;
+    applyTheme(effectiveMode, previewPalette ?? p.palette, previewAccent ?? p.customAccent);
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") revertPreview(); };
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("keydown", escape); applyTheme(p.appearanceMode, p.palette, p.customAccent); };
+  }, [previewing, effectiveMode, previewPalette, previewAccent, p.appearanceMode, p.palette, p.customAccent, revertPreview]);
 
   return (
     <div className="settings settingspanel">
@@ -12523,7 +16234,7 @@ function SettingsScreen(): React.JSX.Element {
         <h2>Settings</h2>
         <span className="sub">How Cloud9 behaves on this computer</span>
         <div className="grow" />
-        <span className="eyebrow">Saved as you change it</span>
+        <span className="eyebrow">Preview, then apply</span>
       </header>
       <div className="set-body">
         <nav className="set-nav" aria-label="Settings sections">
@@ -12531,37 +16242,56 @@ function SettingsScreen(): React.JSX.Element {
             <button key={id} aria-current={here === id ? "true" : "false"} onClick={() => goTo(id)}>{label}</button>
           ))}
         </nav>
-        <div className="set-main">
+        <div className="set-main" data-settings-layer="normal">
           <section id="set-look" className="setsect">
             <h3>Appearance</h3>
             <p className="sec-note">Choose when Cloud9 follows this computer, then choose a palette for that mode.</p>
             <div className="appearance-mode" role="group" aria-label="Appearance mode">
               {(["system", "light", "dark"] as const).map(mode => (
                 <button key={mode} type="button" data-appearance-mode={mode}
-                  aria-pressed={p.appearanceMode === mode}
+                  aria-pressed={effectiveMode === mode}
                   onClick={() => {
                     const family = mode === "system" ? resolvedAppearanceMode(mode) : mode;
-                    const nextPalette = paletteMode(p.palette) === family
-                      ? p.palette
+                    const nextPalette = paletteMode(previewPalette ?? p.palette) === family
+                      ? previewPalette ?? p.palette
                       : defaultPalette(family);
-                    prefs.set({ appearanceMode: mode, palette: nextPalette });
+                    setPreviewMode(mode); setPreviewPalette(nextPalette);
                   }}>
                   {mode === "system" ? "System" : mode === "light" ? "Light" : "Dark"}
                 </button>
               ))}
             </div>
-            <div className="theme-picks" data-palette-mode={visibleMode}>
-              {visiblePalettes.map(({ value, label, prev }) => (
-                <button key={value} className="theme-pick" data-theme-set={value}
-                  aria-pressed={activePalette === value} onClick={() => prefs.set({ palette: value })}>
-                  <span className={`prev ${prev}`} aria-hidden="true">
-                    <span className="rail-s" />
-                    <span className="lines"><i className="l1" /><i className="l2" /><i className="l3" /></span>
-                  </span>
-                  <span className="nm">{label}</span>
-                </button>
-              ))}
+            <div className="palette-tools">
+              <input className="input palette-search" value={paletteQuery} onChange={e => setPaletteQuery(e.target.value)} placeholder="Search palettes" aria-label="Search appearance palettes" />
+              <div className="palette-categories" role="group" aria-label="Palette category">
+                {(["All", "Dark", "Light", "Accessibility"] as const).map(category => <button key={category} className="subtle" aria-pressed={paletteCategory === category} onClick={() => setPaletteCategory(category)}>{category}</button>)}
+              </div>
             </div>
+            <div className="theme-picks" data-palette-mode={visibleMode}>
+              {visiblePalettes.map(({ value, label, prev }) => {
+                const favourite = p.favoritePalettes.includes(value);
+                const selected = (previewPalette ?? activePalette) === value;
+                return <div key={value} className="theme-card">
+                  <button className="theme-pick" data-theme-set={value} aria-pressed={selected} onClick={() => setPreviewPalette(value)}>
+                    <span className={`prev ${prev}`} aria-hidden="true"><span className="rail-s" /><span className="side-s" /><span className="canvas-s" /><span className="composer-s" /></span>
+                    <span className="nm">{label}</span>
+                  </button>
+                  <button className="palette-star" aria-label={`${favourite ? "Remove" : "Add"} ${label} ${favourite ? "from" : "to"} favourites`} aria-pressed={favourite} onClick={() => prefs.set({ favoritePalettes: favourite ? p.favoritePalettes.filter(item => item !== value) : [...p.favoritePalettes, value] })}>★</button>
+                </div>;
+              })}
+            </div>
+            {!visiblePalettes.length && <p className="sec-note">No palettes match this search.</p>}
+            <div className="appearance-actions">
+              <button className="primary" disabled={!previewing} onClick={() => { prefs.set({ appearanceMode: effectiveMode, palette: previewPalette ?? p.palette, customAccent: previewAccent ?? p.customAccent }); setPreviewPalette(null); setPreviewMode(null); setPreviewAccent(null); setAppearanceNote("Appearance applied."); }}>Apply theme</button>
+              <button className="subtle" disabled={!previewing} onClick={revertPreview}>Revert preview</button>
+              <button className="subtle" onClick={() => { setPreviewMode("light"); setPreviewPalette("cloud9-pine"); setPreviewAccent(""); }}>Restore safe default</button>
+              <span className="accent-presets" role="group" aria-label="Accent color presets">{ACCENT_PRESETS.map(([name, color]) => <button key={name} className="accent-swatch" title={name} aria-label={`${name} accent`} aria-pressed={(previewAccent ?? p.customAccent) === color} style={{ "--swatch": color } as React.CSSProperties} onClick={() => setPreviewAccent(color)}>{(previewAccent ?? p.customAccent) === color ? "✓" : ""}</button>)}</span>
+              <label className="accent-control">Custom accent <input type="color" value={validAccent(previewAccent ?? p.customAccent) ? previewAccent ?? p.customAccent : "#61d1af"} onChange={e => setPreviewAccent(e.target.value)} /></label>
+              <button className="subtle" onClick={() => setPreviewAccent("")}>Use palette accent</button>
+              <button className="subtle" onClick={exportAppearance}>Export JSON</button>
+              <label className="subtle import-appearance">Import JSON<input type="file" accept="application/json" onChange={e => void importAppearance(e.currentTarget.files?.[0])} /></label>
+            </div>
+            <div className="appearance-status" role="status">{previewing ? `Previewing ${PALETTES.find(item => item.value === activePalette)?.label ?? "appearance"}. Press Escape to revert.` : appearanceNote ?? "Changes apply only when you choose Apply theme."}</div>
             <div className="thread-layout-row" role="group" aria-label="Thread layout">
               <span className="tx"><b>Thread layout</b><span>
                 {p.threadLayout === "focus" ? "Threads open over the channel, full width" : "Threads open in a side panel next to the channel"}
@@ -12625,6 +16355,47 @@ function SettingsScreen(): React.JSX.Element {
               rather than in the conversation itself. A room you have turned down
               stays quiet either way; only somebody naming you gets through that.
             </p>
+            <h4>Chat personalization</h4>
+            <p className="sec-note">These choices are saved locally on this computer and preview immediately in the room and thread.</p>
+            <div className="panelbox chat-personalization-panel" data-chat-personalization="true">
+              <div className="chat-personalization-grid">
+                <label className="field-row"><span>Chat font size</span>
+                  <select className="select" aria-label="Chat font size" value={p.chatFontSize}
+                    onChange={e => prefs.set({ chatFontSize: e.target.value as ChatFontSize })}>
+                    <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Message density</span>
+                  <select className="select" aria-label="Message density" value={p.messageDensity}
+                    onChange={e => prefs.set({ messageDensity: e.target.value as MessageDensity })}>
+                    <option value="comfortable">Comfortable</option><option value="compact">Compact</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Timestamp style</span>
+                  <select className="select" aria-label="Timestamp style" value={p.timestampStyle}
+                    onChange={e => prefs.set({ timestampStyle: e.target.value as TimestampStyle })}>
+                    <option value="relative">Time only</option><option value="exact">Date and time</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Avatar size</span>
+                  <select className="select" aria-label="Avatar size" value={p.avatarSize}
+                    onChange={e => prefs.set({ avatarSize: e.target.value as AvatarSize })}>
+                    <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+                  </select>
+                </label>
+              </div>
+              <div className="chat-personalization-actions">
+                <button className="subtle" type="button" onClick={() => prefs.set({
+                  chatFontSize: DEFAULT_CHAT_PERSONALIZATION.fontSize,
+                  messageDensity: DEFAULT_CHAT_PERSONALIZATION.density,
+                  timestampStyle: DEFAULT_CHAT_PERSONALIZATION.timestamp,
+                  avatarSize: DEFAULT_CHAT_PERSONALIZATION.avatarSize,
+                })}>Reset chat appearance</button>
+                <span className="appearance-status" role="status">
+                  {!world.connected ? "Offline — saved locally; it will remain available when you reconnect." : "Saved locally on this computer."}
+                </span>
+              </div>
+            </div>
           </section>
 
           <section id="set-agents" className="setsect">
@@ -12697,6 +16468,27 @@ function SettingsScreen(): React.JSX.Element {
                 <input className="input" type="time" value={p.quietTo} disabled={!p.quietOn}
                   onChange={e => prefs.set({ quietTo: e.target.value })} /></div>
             </div>
+            <h4>Per-channel notifications</h4>
+            <p className="sec-note">Choose which authorized rooms can interrupt you. Mentions always remain visible in the room; Off only controls notifications.</p>
+            {!world.connected && <div className="notice" role="status">Offline — showing the last authorized rooms. Changes are saved locally.</div>}
+            <div className="panelbox channel-notification-rules" data-channel-notification-rules="true">
+              {world.channels.length === 0
+                ? <span className="meta">No authorized rooms are available yet.</span>
+                : world.channels.map(channel => {
+                  const mode = channelNotificationModeFor(p, channel.id);
+                  const label = channel.kind === "dm" ? channel.name : `#${channel.name}`;
+                  return <label className="field-row channel-notification-rule" key={channel.id}>
+                    <span>{label}</span>
+                    <select className="select" aria-label={`Notifications for ${label}`} value={mode}
+                      onChange={e => prefs.set(withChannelNotificationMode(prefs.get(), channel.id, e.target.value as ChannelNotificationMode))}>
+                      <option value="all">All messages</option>
+                      <option value="mentions">Mentions only</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>;
+                })}
+              <button className="subtle" type="button" onClick={() => prefs.set({ channelNotificationModes: {}, mutedChannelIds: [] })}>Reset channel notification rules</button>
+            </div>
           </section>
 
           {owner ? (
@@ -12706,6 +16498,10 @@ function SettingsScreen(): React.JSX.Element {
                 Cloud9 runs your agents through apps already installed on this computer.
                 Sign in once here and your agents can work. Connect your AI apps below.
               </p>
+              <div className="set-conn" data-connected={world.connected ? "yes" : "no"} role="status">
+                <span className={`harnessdot ${world.connected ? "ok" : "off"}`} />
+                <span>{world.hubConn.line || (world.connected ? "Connected" : "Disconnected")}</span>
+              </div>
               <HarnessCard
                 harness="claude" title="Claude" mark={<MarkClaude />}
                 info={claudeInfo}
@@ -12769,6 +16565,24 @@ function SettingsScreen(): React.JSX.Element {
             <WorkspaceAdministration />
           </section>
 
+          <section id="set-diag" className="setsect" data-settings-layer="diagnostics">
+            <h3>Advanced / Diagnostics</h3>
+            <p className="sec-note">Runtime, CLI versions, model discovery, and connection probes. Everyday sign-in stays under Connected apps.</p>
+            <SettingsDiagnostics
+              connected={world.connected}
+              hubLine={world.hubConn.line}
+              hubPhase={world.hubConn.phase}
+              claude={claudeInfo}
+              codex={codexInfo}
+              github={world.harness?.github}
+              checking={world.harness?.checking}
+              demo={world.harness?.demo}
+              verifyClaims={world.harness?.verifyClaims}
+              updatedAt={world.harness?.updatedAt}
+              owner={owner}
+            />
+          </section>
+
           <section id="set-danger" className="setsect danger">
             <h3>Danger zone</h3>
             <p className="sec-note">These cannot be undone from here.</p>
@@ -12776,6 +16590,125 @@ function SettingsScreen(): React.JSX.Element {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SettingsDiagnostics({
+  connected, hubLine, hubPhase, claude, codex, github, checking, demo, verifyClaims, updatedAt, owner,
+}: {
+  connected: boolean;
+  hubLine: string;
+  hubPhase: string;
+  claude?: HarnessInfo;
+  codex?: HarnessInfo;
+  github?: GitHubAccountInfo;
+  checking?: boolean;
+  demo?: boolean;
+  verifyClaims?: boolean;
+  updatedAt?: number;
+  owner: boolean;
+}): React.JSX.Element {
+  const cliLine = (title: string, info?: HarnessInfo): string => {
+    if (!info) return `${title}: not reported yet`;
+    if (info.version) return `${title}: ${info.version}`;
+    if (info.installed) return `${title}: found, version not reported`;
+    return `${title}: ${info.detail || "not confirmed on this computer"}`;
+  };
+  const looked = (github?.checkedAt ?? 0) > 0;
+  const askAgain = () => {
+    client.send({ type: "refreshHarness" });
+    client.send({ type: "harnessStatus" });
+  };
+
+  return (
+    <div className="diag-panel" data-settings-diagnostics="true">
+      <div className="diag-box" data-diag="runtime">
+        <h4>Runtime</h4>
+        <div className="diag-rows">
+          <div className="diag-row"><span className="diag-k">Cloud9</span>
+            <span data-diag-field="connection">{hubLine || (connected ? "Connected" : "Disconnected")}</span></div>
+          <div className="diag-row"><span className="diag-k">Phase</span>
+            <span data-diag-field="phase">{hubPhase || "idle"}</span></div>
+          <div className="diag-row"><span className="diag-k">Demo answers</span>
+            <span data-diag-field="demo">{demo ? DEMO_MODE_BANNER : "Off — answers come from the connected apps."}</span></div>
+          <div className="diag-row"><span className="diag-k">Claim check</span>
+            <span data-diag-field="verify">{verifyClaims === true
+              ? "This engine checks what agents say against what they did."
+              : verifyClaims === false
+                ? "This engine is not checking agent claims."
+                : "Not known — this engine never said whether it checks claims."}</span></div>
+        </div>
+      </div>
+
+      {owner ? (
+        <>
+          <div className="diag-box" data-diag="cli">
+            <h4>CLI versions</h4>
+            <div className="diag-rows">
+              <div className="diag-row" data-diag-cli="claude"><span className="diag-k">Claude</span>
+                <span>{cliLine("Claude", claude).replace(/^Claude: /, "")}</span></div>
+              <div className="diag-row" data-diag-cli="codex"><span className="diag-k">Codex</span>
+                <span>{cliLine("Codex", codex).replace(/^Codex: /, "")}</span></div>
+              <div className="diag-row" data-diag-cli="github"><span className="diag-k">GitHub</span>
+                <span>{!looked ? "Cloud9 hasn't asked this computer yet."
+                  : github?.installed ? "GitHub's program found"
+                    : "GitHub's program not found"}</span></div>
+            </div>
+          </div>
+
+          <div className="diag-box" data-diag="models">
+            <h4>Model discovery</h4>
+            <p className="sec-note">Printed in the engine's own words. Absent means absent.</p>
+            {([["claude", "Claude", claude], ["codex", "Codex", codex]] as const).map(([id, title, info]) => (
+              <div key={id} className="diag-model" data-diag-models={id}>
+                <span className="diag-k">{title}</span>
+                {(info?.models?.length ?? 0) > 0 && (
+                  <span className="diag-chip">{countOf(info!.models!.length, "model")} available</span>
+                )}
+                {info?.modelsDetail
+                  ? <div className="diag-modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
+                      <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
+                      <span>{info.modelsDetail}</span>
+                    </div>
+                  : <span className="diag-absent">nothing claimed</span>}
+              </div>
+            ))}
+          </div>
+
+          <div className="diag-box" data-diag="connection">
+            <h4>Connection diagnostics</h4>
+            <div className="diag-rows">
+              <div className="diag-row"><span className="diag-k">Probe</span>
+                <span>{checking ? "Looking at this computer now." : "Idle."}</span></div>
+              {updatedAt ? (
+                <div className="diag-row"><span className="diag-k">Last frame</span>
+                  <span>{new Date(updatedAt).toLocaleTimeString()}</span></div>
+              ) : null}
+              {([["claude", "Claude", claude], ["codex", "Codex", codex]] as const).map(([id, title, info]) => (
+                <div key={id} className="diag-row" data-diag-conn={id}>
+                  <span className="diag-k">{title}</span>
+                  <span>{!info ? "not reported yet"
+                    : [info.detail, info.unsure ? "sign-in not confirmed" : "", info.problem].filter(Boolean).join(" · ")}</span>
+                </div>
+              ))}
+              <div className="diag-row" data-diag-conn="github">
+                <span className="diag-k">GitHub</span>
+                <span>{looked
+                  ? `Cloud9 asked this computer at ${new Date(github!.checkedAt).toLocaleTimeString()}.`
+                  : "Cloud9 hasn't asked this computer yet."}</span>
+              </div>
+            </div>
+            <div className="harnessbtns">
+              <button className="ghostbtn" disabled={checking} onClick={askAgain}>
+                {checking ? "Checking…" : "Re-check"}
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="notice">CLI versions and model discovery live on the owner's computer. There is nothing here to probe.</div>
+      )}
     </div>
   );
 }
@@ -12862,6 +16795,7 @@ function WorkspaceAdministration(): React.JSX.Element {
 }
 
 /** The sign-in card. What the button says is decided by the state — never "again". */
+
 function HarnessCard({
   harness, title, mark, info, checking, savedKey, onStoredChanged,
   signInLabel, fallbackLabel, fallbackHelp, disclosure,
@@ -12893,9 +16827,27 @@ function HarnessCard({
   const problem = info?.problem;
   const authKind = info?.authKind;
 
+  /**
+   * NEVER THE SCREEN'S OWN "not installed", 2026-08-12.
+   *
+   * `installed: false` does NOT mean "this app is not on this computer". It
+   * means nothing proved that it is — and the probe timing out is one of the
+   * ways that happens: the harness then sends `installed: false` alongside its
+   * own sentence, "Claude is on this computer but did not answer in time".
+   * This ladder tested the boolean FIRST and printed "not installed on this
+   * computer" straight over the top of that sentence, so the card contradicted
+   * itself and sent him off to install an app he already had — the exact
+   * failure `harness.ts` recorded on 2026-08-05, still alive on the screen.
+   *
+   * So the screen stops writing this state at all and prints the harness's own
+   * words, the way `modelsDetail` is already printed verbatim below. `detail`
+   * is a required field and carries "the Claude app isn't installed on this
+   * computer" when that really is what was found, so the clear answer is not
+   * lost — it just stops being a claim this screen makes on its own authority.
+   */
   const state = !info ? "checking…"
     : waiting ? "waiting for you in the browser…"
-    : !installed ? "not installed on this computer"
+    : !installed ? (info.detail || "not confirmed on this computer")
     : signedIn ? `signed in${info.account ? ` as ${info.account}` : ""}`
     : problem ? problem
     : info.detail ?? "installed, not signed in";
@@ -12944,10 +16896,28 @@ function HarnessCard({
       </div>
 
       <div className="harnessfacts">
+        {/* "FOUND" IS A FACT; "NOT FOUND" IS NOT ITS OPPOSITE. A version came
+            back, or nothing did — and nothing coming back covers both "it is
+            not here" and "it did not answer in time". This row used to print
+            "✗ app not found" over a state line that said the app IS here, so
+            the same card made both claims at once. `installed` alone cannot
+            tell those two apart, so the negative says only what is true of
+            both, and the state line above carries the harness's own sentence
+            for which one it was. */}
         <span className={installed ? "yes" : "no"}>
-          {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}` : "✗ app not found"}
+          {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}`
+            : "· app not confirmed"}
         </span>
-        <span className={signedIn ? "yes" : "no"}>{signedIn ? "✓ signed in" : "✗ not signed in"}</span>
+        {/* THE SAME RULE, AND HERE THE HARNESS ACTUALLY SAYS WHICH. `unsure`
+            exists precisely for "the app is here and never told us whether it
+            is signed in"; `signedIn` is false then because nothing proved
+            otherwise, not because a no came back. So the flat "✗" is kept for
+            the state that really was proved, and the unproved one says so. */}
+        <span className={signedIn ? "yes" : "no"}>
+          {signedIn ? "✓ signed in"
+            : (info?.unsure || !installed) ? "· sign-in not confirmed"
+            : "✗ not signed in"}
+        </span>
         {authWords && <span>{authWords}</span>}
         {(info?.models?.length ?? 0) > 0 && <span>{countOf(info!.models!.length, "model")} available</span>}
         {savedKey && <span>✓ key saved on this computer</span>}
@@ -13020,6 +16990,21 @@ function HarnessCard({
       )}
       {message && <div className="notice">{message}</div>}
       <div className="notice">{disclosure}</div>
+      <details className="harness-diag">
+        <summary>Diagnostics</summary>
+        <div className="harnessfacts">
+          <span className={installed ? "yes" : "no"}>
+            {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}`
+              : "· app not confirmed"}
+          </span>
+        </div>
+        {info?.modelsDetail && (
+          <div className="modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
+            <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
+            <span className="ms-tx">{info.modelsDetail}</span>
+          </div>
+        )}
+      </details>
     </div>
   );
 }
@@ -13046,6 +17031,7 @@ const GH_LOGIN_COMMAND = "gh auth login --web --git-protocol https";
  * prints a masked token and a scope list; neither is carried on the frame, so
  * neither can be drawn here.
  */
+
 function GitHubCard({ info, checking }: {
   info?: GitHubAccountInfo; checking?: boolean;
 }): React.JSX.Element {
@@ -13207,17 +17193,39 @@ function workspaceRoomName(entry: ArtifactWorkspaceEntry, world: World): string 
 
 type FileSelection = { artifactId: ID; version?: number };
 
-function CopyFileRef({ value, kind }: { value: string; kind: "newest" | "exact" }): React.JSX.Element {
+function CopyFileRef({ value, kind, version }: {
+  value: string;
+  kind: "newest" | "exact";
+  version?: number;
+}): React.JSX.Element {
   const [copied, setCopied] = useState(false);
+  const label = kind === "newest"
+    ? "Copy newest reference"
+    : version !== undefined ? `Copy exact version ${version}` : "Copy exact version";
   return (
-    <button className="btn small ghost filerefcopy" data-copy-ref={kind}
+    <button className="btn small ghost filerefcopy" type="button" data-copy-ref={kind}
       title={value} onClick={() => {
         void navigator.clipboard?.writeText(value).then(() => {
           setCopied(true);
           window.setTimeout(() => setCopied(false), 1600);
         });
       }}>
-      {copied ? "Copied" : kind === "newest" ? "Copy newest reference" : "Copy exact version"}
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+function CopyLabeledId({ value, label }: { value: string; label: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button className="btn small ghost fileidcopy" data-copy-id={label} title={value}
+      onClick={() => {
+        void navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1600);
+        });
+      }}>
+      {copied ? "Copied" : label}
     </button>
   );
 }
@@ -13797,18 +17805,6 @@ type WorkflowDraft = {
 const workflowStepId = (): ID =>
   "wfs_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
 
-function workflowStatusWords(status: WorkflowRun["status"]): string {
-  switch (status) {
-    case "queued": return "Queued";
-    case "running": return "Running";
-    case "waiting_you": return "Waiting for you";
-    case "succeeded": return "Succeeded";
-    case "failed": return "Failed";
-    case "stopped": return "Stopped";
-    case "interrupted": return "Interrupted after restart";
-  }
-}
-
 function WorkflowsScreen(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const owner = isOwner(world.me);
@@ -14097,7 +18093,8 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
   onOpened?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [filter, setFilter] = useState<"all" | "running" | "done" | "failed">("all");
+  type TaskScreenFilter = CommandCenterFilter | "running" | "done";
+  const [filter, setFilter] = useState<TaskScreenFilter>("all");
   const [focusTaskId, setFocusTaskId] = useState<ID | null>(null);
 
   useEffect(() => {
@@ -14124,10 +18121,15 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
   const mineExpired = mineAll.filter(a => approvalIsDead(a));
 
   const shown = world.tasks.filter(t => {
+    if (filter === "all") return true;
     if (filter === "running") return RUNNING_STATES.includes(t.status);
     if (filter === "done") return t.status === "completed";
-    if (filter === "failed") return t.status === "failed" || t.status === "cancelled";
-    return true;
+    return taskMatchesCommandCenterFilter({
+      task: t,
+      approvals: world.approvals,
+      runs: Object.values(world.runs),
+      meId: world.me?.id,
+    }, filter);
   });
   /* A STUCK JOB IS NOT A RUNNING JOB. It used to be printed under "Running"
      with everything genuinely moving, which is how a job waiting on something
@@ -14181,12 +18183,10 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
         </div>
         <div className="taskbtns">
           <span className="chip">{elapsed(t.updatedAt - t.createdAt)}</span>
-          {mine && <>
-            <button className="gold small"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "approved" })}>Approve</button>
-            <button className="btn small danger"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "rejected" })}>Reject</button>
-          </>}
+          {approval && (approval.status === "pending" || approvalIsDead(approval)) &&
+            <ApprovalCheckpointControls approval={approval}
+              midRun={approval.kind === "action" || approval.kind === "plan" || approval.kind === "saving"}
+              dead={approvalIsDead(approval)} />}
           {cancellable && !mine &&
             <button className="btn small" onClick={() => client.send({ type: "cancelTask", taskId: t.id })}>Stop</button>}
           {t.channelId && <button className="btn small" onClick={() => onOpenChannel(t.channelId)}>Read it</button>}
@@ -14201,8 +18201,8 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
         <h2>Tasks</h2>
         <span className="sub">Jobs you handed out, and the ones waiting on your word</span>
         <div className="grow" />
-        <div className="seg" role="group" aria-label="Which jobs to show">
-          {([["all", "All"], ["running", "Running"], ["done", "Done"], ["failed", "Failed"]] as const).map(([k, l]) => (
+        <div className="seg command-center-filters" role="group" aria-label="Command center filters">
+          {([["all", "All"], ["running", "Running"], ["done", "Done"], ["mine", "Mine"], ["waiting", "Waiting for me"], ["failed", "Failed"], ["completed", "Completed"]] as const).map(([k, l]) => (
             <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l}</button>
           ))}
         </div>
@@ -14210,7 +18210,10 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
 
       <div className="tasks-body">
         <div className="tasks-main">
-          {world.tasks.length === 0 && (
+          {!world.connected && (
+            <div className="empty-state command-center-offline" role="status">Cloud9 is offline. Reconnect to refresh command-center facts.</div>
+          )}
+          {world.tasks.length === 0 && world.connected && (
             <EmptyTray title="Nothing handed over yet"
               line={<>Ask an agent with <code>@Agent !bg your job</code> and the result lands here.</>} />
           )}
@@ -14218,7 +18221,7 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
               empty panel on its own reads as "nothing ever happened". */}
           {world.tasks.length > 0 && shown.length === 0 && (
             <EmptyTray title="No jobs of that kind"
-              line={<>Nothing here is {filter === "running" ? "running or stuck" : filter === "done" ? "finished" : "failed or stopped"} right now. Pick “All” to see every job.</>} />
+              line={<>No server-recorded jobs match this filter right now. Pick “All” to see every job.</>} />
           )}
           {stuck.length > 0 && (
             <span className="eyebrow stucklabel" style={{ display: "block", marginBottom: 12 }}>
@@ -14315,6 +18318,7 @@ const ITEM_STATE_TONE: Record<ProjectItemState, string> = {
 };
 
 /** "vikas53953/cloud9" drawn as the printed label it is — owner quiet, name loud. */
+
 function RepoName({ repo }: { repo: string }): React.JSX.Element {
   const cut = repo.indexOf("/");
   const owner = cut > 0 ? repo.slice(0, cut) : "";
@@ -14359,6 +18363,10 @@ function BranchRibbon({ branch, base, agent }: {
         strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="6.5" cy="5.5" r="2" /><circle cx="6.5" cy="18.5" r="2" /><circle cx="17.5" cy="9" r="2" />
         <path d="M6.5 7.5v9M17.5 11v.6a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3" />
+      </svg>
+      <code className="bname">{branch}</code>
+      {/* The trunk is only named when the hub told us what it is. Guessing
+          "main" would point his one protected branch at som5v9M17.5 11v.6a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3" />
       </svg>
       <code className="bname">{branch}</code>
       {/* The trunk is only named when the hub told us what it is. Guessing
@@ -14580,6 +18588,7 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
  * plain browser — dev, QA — there is no picker at all, so it says so and offers
  * to take the folder typed, which is the same frame by another route.
  */
+
 function ProjectFolder({ project }: { project: Project }): React.JSX.Element {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
@@ -14663,6 +18672,7 @@ function ProjectFolder({ project }: { project: Project }): React.JSX.Element {
 }
 
 /** One project's pull requests and issues, and the crew standing on its branches. */
+
 function ProjectDetail({ project, onOpenChannel, openItem }: {
   project: Project; onOpenChannel: (id: ID) => void;
   /** concrete PR/issue a durable social link asked to open */
@@ -15107,7 +19117,7 @@ function PollsScreen(): React.JSX.Element {
           <form className="poll-create" onSubmit={submit} aria-label="Create project poll">
             <h3>New decision</h3>
             <label className="field"><span>Question</span><input value={question} maxLength={240} onChange={e => setQuestion(e.target.value)} placeholder="What should we ship next?" /></label>
-            {options.map((value, i) => <label className="field" key={i}><span>Option {i + 1}</span><input value={value} maxLength={120} onChange={e => setOptions(xs => xs.map((x, j) => j === i ? e.target.value : x))} /></label>)}
+            {options.map((value, i) => <label className="field" key={i}><span>Alternative {i + 1}</span><input value={value} maxLength={120} onChange={e => setOptions(xs => xs.map((x, j) => j === i ? e.target.value : x))} /></label>)}
             {options.length < 10 && <button type="button" className="btn" onClick={() => setOptions(xs => [...xs, ""])}>Add option</button>}
             <label className="field"><span>Deadline (optional)</span><input type="datetime-local" value={deadline} onChange={e => setDeadline(e.target.value)} /></label>
             <button className="btn primary" type="submit">Create poll</button>
@@ -15125,26 +19135,59 @@ function PollsScreen(): React.JSX.Element {
 }
 
 function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary: string; onSummary: (v: string) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [choice, setChoice] = useState(poll.myOptionId ?? "");
   useEffect(() => setChoice(poll.myOptionId ?? ""), [poll.myOptionId]);
-  return <article className="poll-card" data-poll={poll.id}>
-    <header><h3>{poll.question}</h3><span className="meta">{poll.authorKind === "agent" ? "Agent" : "Human"} · {poll.status}</span></header>
-    <fieldset disabled={poll.status !== "open"}><legend className="sr-only">Options</legend>{poll.options.map(option => <label key={option.id} className="poll-option"><input type="radio" name={`poll-${poll.id}`} checked={choice === option.id} onChange={() => setChoice(option.id)} /> <span>{option.label}</span><b>{poll.results.find(r => r.optionId === option.id)?.votes ?? 0}</b></label>)}</fieldset>
+  const ownerName = studioPersonName(poll.authorId, world.users, world.agents);
+  const owner = ownerName ?? (poll.authorKind === "agent" ? "Agent" : "Teammate");
+  const status = poll.status === "open" ? "Open" : "Closed";
+  const chosen = pollChosenLabel(poll);
+  const closer = poll.decision ? studioPersonName(poll.decision.closedBy, world.users, world.agents) : undefined;
+  const participants = `${poll.totalVotes} ${poll.totalVotes === 1 ? "vote" : "votes"}`;
+  return <article className="poll-card" data-poll={poll.id} data-status={poll.status}>
+    <header>
+      <div>
+        <h3>{poll.question}</h3>
+        <p className="meta poll-facts">
+          Owner · {owner}
+          {poll.createdAt ? ` · ${new Date(poll.createdAt).toLocaleString()}` : ""}
+        </p>
+      </div>
+      <span className="poll-status" data-status={poll.status}>{status}</span>
+    </header>
+    <fieldset disabled={poll.status !== "open"}>
+      <legend>Alternatives</legend>
+      {poll.options.map(option => {
+        const votes = poll.results.find(r => r.optionId === option.id)?.votes ?? 0;
+        const mine = poll.myOptionId === option.id;
+        const picked = chosen === option.label;
+        return <label key={option.id} className="poll-option" data-chosen={picked ? "true" : "false"}>
+          <input type="radio" name={`poll-${poll.id}`} checked={choice === option.id} onChange={() => setChoice(option.id)} />
+          <span>{option.label}{mine && poll.status === "open" ? " · your choice" : ""}{picked && poll.status === "closed" ? " · chosen" : ""}</span>
+          <b>{votes}</b>
+        </label>;
+      })}
+    </fieldset>
+    <p className="meta">Participants · {participants}</p>
+    {chosen && <p className="meta poll-chosen">Chosen option · {chosen}</p>}
     <div className="poll-actions">{poll.status === "open" && <button className="btn" disabled={!choice} onClick={() => client.votePoll(poll.id, choice)}>Vote / change vote</button>}{poll.canClose && poll.status === "open" && <><input aria-label="Decision note" maxLength={500} value={summary} onChange={e => onSummary(e.target.value)} placeholder="Decision note (optional)" /><button className="btn" onClick={() => client.closePoll(poll.id, summary)}>Close and record result</button></>}</div>
     {poll.status === "closed" && poll.decision && <p className="meta poll-decision" data-reason={poll.decision.reason} data-closed-at={poll.decision.closedAt}>
-      Decision recorded: {poll.decision.reason === "deadline" ? "deadline reached" : "closed by owner"} · {new Date(poll.decision.closedAt).toLocaleString()}
+      Decision recorded: {poll.decision.reason === "deadline" ? "deadline reached" : (closer ? `closed by ${closer}` : "closed by owner")} · {new Date(poll.decision.closedAt).toLocaleString()}
       {poll.decision.summary ? ` · ${poll.decision.summary}` : ""}
     </p>}
-    <p className="meta">{poll.status === "closed" ? `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"}` : `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"} · open until ${poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}`}</p>
+    {poll.status === "open" && <p className="meta">Open until {poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}</p>}
+    <details className="studio-advanced">
+      <summary>Advanced</summary>
+      <p className="meta">Poll id · <code>{poll.id}</code> <button type="button" className="linkish" onClick={() => { void navigator.clipboard?.writeText(poll.id); }}>Copy</button></p>
+    </details>
   </article>;
 }
 
-
-const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
-
-function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId: ID) => void }): React.JSX.Element {
+function CanvasScreen({ onOpenLink, initialProjectId }: {
+  onOpenLink: (link: CanvasLink, projectId: ID) => void; initialProjectId?: ID;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [projectId, setProjectId] = useState<ID | "">("");
+  const [projectId, setProjectId] = useState<ID | "">(initialProjectId ?? "");
   const [canvasId, setCanvasId] = useState<ID | "">("");
   const [newTitle, setNewTitle] = useState("");
   const [kind, setKind] = useState<CanvasBlockKind>("markdown");
@@ -15155,6 +19198,7 @@ function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId
   const dirtyCanvas = newTitle.trim().length > 0 || text.trim().length > 0 || Object.keys(editing).length > 0;
   useUnsavedWork("the Canvas draft", dirtyCanvas);
   useEffect(() => { if (world.connected) client.askProjects(); }, [world.connected]);
+  useEffect(() => { if (initialProjectId) setProjectId(initialProjectId); }, [initialProjectId]);
   const projects = world.projects.list;
   const project = projects.find(p => p.id === projectId) ?? projects[0];
   useEffect(() => { if (project?.id && world.connected) { setProjectId(project.id); client.askCanvases(project.id); } }, [project?.id, world.connected]);
@@ -15182,9 +19226,9 @@ function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId
         {canvases.length > 0 && <div className="canvas-layout">
           <aside className="canvas-list" aria-label="Canvas list">{canvases.map(c => <button className="side-item" key={c.id} aria-current={canvas?.id === c.id ? "true" : "false"} onClick={() => setCanvasId(c.id)}><span className="txt">{c.title}</span>{c.unread && <span className="cnt hot" aria-label="unread updates">•</span>}</button>)}</aside>
           {canvas && <section className="canvas-editor" aria-live="polite">
-            <header><div><h3>{canvas.title}</h3><span className="meta">Revision {canvas.revision} · {canvas.blocks.filter(b => !b.deletedAt).length} active blocks · recent 100 revisions retained</span></div><button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History (recent 100)</button></header>
-            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Block type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{k}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div><button className="btn primary" type="submit">Add block</button></form>
-            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Tombstoned block · retained in history</span></article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{block.kind}</span><span className="meta">{block.authorKind === "agent" ? "Agent" : "Human"}</span></header><textarea aria-label={`${block.kind} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove (keep history)</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open linked {block.link.kind}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div></article>)}</div>
+            <header><div><h3>{canvas.title}</h3><span className="meta">{canvasVersionLine(canvas, world.users, world.agents)}</span></div><button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History →</button></header>
+            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Block type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{canvasBlockKindLabel(k)}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div><button className="btn primary" type="submit">Add block</button></form>
+            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Removed{block.deletedByName ? ` by ${block.deletedByName}` : ""} · kept in History{block.deletedAt ? ` · ${new Date(block.deletedAt).toLocaleString()}` : ""}</span></article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{canvasBlockKindLabel(block.kind)}</span><span className="meta">{canvasActorName(block.authorId, block.authorKind, world.users, world.agents, block.authorName) || (block.authorKind === "agent" ? "Agent" : "Project member")}</span></header><textarea aria-label={`${canvasBlockKindLabel(block.kind)} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open linked {block.link.kind}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div><details className="canvas-advanced"><summary>Advanced</summary><p className="meta">Block id · <code>{block.id}</code></p></details></article>)}</div>
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyLoading && <div className="runwait" role="status">Loading revision history…</div>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyProblem && <p className="problem" role="alert">{world.canvases.historyProblem}</p>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyAsked && !world.canvases.historyLoading && !world.canvases.historyProblem && world.canvases.historyRequestId === undefined && world.canvases.history.length === 0 && <p className="meta" role="status">No revision history has been recorded yet.</p>}
@@ -15239,6 +19283,7 @@ const SPLIT_LABEL_FITS = 0.2;
 /** One agent's row: what it cost, how it splits, and what is wrong with it. */
 
 /** Public project updates — draft, approve, publish on Cloud9's own read path. */
+
 function PublicUpdatesScreen(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [projectId, setProjectId] = useState<ID | "">(world.projects.list[0]?.id ?? "");
@@ -15683,7 +19728,8 @@ function SpendingScreen(): React.JSX.Element {
  * Now there is one list of lines and everything on the screen is derived from
  * it. A second way to count agents is, from here on, a bug.
  */
-function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
+
+function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine; where?: string }[] {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const liveWork = useLiveWorkByAgent();
 
@@ -15754,7 +19800,13 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
          left here to get wrong. */
       last,
     });
-    return { agent, line };
+    const channelId = work?.channelId
+      ?? asking?.channelId
+      ?? queued?.channelId
+      ?? (last ? world.runs[last.id]?.channelId : undefined);
+    const room = activityRoomName(channelId, world.channels);
+    const where = room ? (room === "Direct message" ? room : `#${room}`) : undefined;
+    return { agent, line, ...(where ? { where } : {}) };
     /* `world.runLists` IS IN THIS LIST BECAUSE THE ANSWER ARRIVES LATER.
        The run history is read through `client` (one spelling of a history's
        key, rather than two), but it is WORLD state — so leaving it out of the
@@ -15762,7 +19814,7 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
        board would never redraw to show it. The row would sit on "Ready" for
        ever with the record already in memory. */
   }), [mine, world.presence, world.agentStatus, world.tasks, world.runLists,
-    liveApprovals, liveWork, askOf]);
+    world.channels, world.runs, liveApprovals, liveWork, askOf]);
 }
 
 /**
@@ -15851,13 +19903,14 @@ function RightNowBoard(): React.JSX.Element {
       </div>
       {ordered.length > 0 && (
         <div className="rn-rows">
-          {ordered.map(({ agent, line }) => (
+          {ordered.map(({ agent, line, where }) => (
             <div className="rn-row" key={agent.id}
               data-agent={agent.id} data-state={line.state}>
               <span className="rn-face"><AgentFace name={agent.name} size={30} /></span>
               <span className="rn-tx">
                 <b>{agent.name}</b>
                 <span className="rn-detail">{line.detail}</span>
+                {where && <span className="rn-where">in {where}</span>}
               </span>
               {/* THE TICK IS ONLY DRAWN WHEN THERE IS ONE. A quiet state has no
                   tick in the chat either, and printing a dash in its place put
@@ -15944,45 +19997,6 @@ function socialLinkLabel(link: SocialLink): string {
   return `${link.kind} ${link.id}`;
 }
 
-
-function HuddlesScreen({ onLink }: { onLink: (link: HuddleLink, projectId?: ID) => void }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [projectId, setProjectId] = useState<ID>("");
-  const [sessionId, setSessionId] = useState<ID>();
-  const [title, setTitle] = useState("");
-  const [agenda, setAgenda] = useState("");
-  const [body, setBody] = useState("");
-  const [kind, setKind] = useState<HuddleNoteKind>("note");
-  const startRequest = useRef<ID | undefined>(undefined);
-  const noteRequest = useRef<ID | undefined>(undefined);
-  const noteDraft = useRef("");
-  useEffect(() => { client.askHuddleProjects(); client.askHuddles(); }, []);
-  useEffect(() => {
-    if (!projectId && world.huddleProjects.list[0]) setProjectId(world.huddleProjects.list[0].id);
-    if (projectId) client.askHuddles(projectId);
-    if (!sessionId && world.huddles.sessions[0]) setSessionId(world.huddles.sessions[0].id);
-  }, [projectId, sessionId, world.huddleProjects.list, world.huddles.sessions]);
-  // Open durable history + clear unread when a session is selected (reconnect/reopen path).
-  useEffect(() => {
-    if (!sessionId) return;
-    client.askHuddle(sessionId);
-    client.huddleSend({ type: "huddleMarkRead", sessionId });
-  }, [sessionId]);
-  const active = world.huddles.sessions.find(s => s.id === sessionId);
-  const notes = active ? world.huddleNotes[active.id] ?? [] : [];
-  const latest = Object.values(world.huddleMutations).sort((a, b) => a.state === "pending" ? -1 : b.state === "pending" ? 1 : 0)[0];
-  useEffect(() => { const id = startRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setTitle(""); setAgenda(""); startRequest.current = undefined; } }, [world.huddleMutations]);
-  useEffect(() => { const id = noteRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setBody(current => current === noteDraft.current ? "" : current); noteRequest.current = undefined; } }, [world.huddleMutations]);
-  const start = (e: React.FormEvent) => { e.preventDefault(); if (projectId && title.trim() && agenda.trim()) { startRequest.current = client.huddleSend({ type: "huddleStart", projectId, title, agenda }); } };
-  // Notes are project-scoped: any project member may write without joining presence.
-  const addNote = (e: React.FormEvent) => { e.preventDefault(); if (active && active.state === "active" && body.trim()) { noteDraft.current = body; noteRequest.current = client.huddleSend({ type: "huddleNote", sessionId: active.id, kind, body }); } };
-  return <section className="huddle-screen" aria-labelledby="huddles-heading"><header className="screen-head"><div><span className="eyebrow">Project presence</span><h1 id="huddles-heading">Huddles</h1><p className="muted">Shared notes for the project team — join only marks you present. No audio or video in v1.</p></div></header>
-    <label className="field-label" htmlFor="huddle-project">Project</label><select id="huddle-project" className="input" value={projectId} onChange={e => { setProjectId(e.target.value); setSessionId(undefined); }} aria-label="Choose huddle project"><option value="">Choose a project</option>{world.huddleProjects.list.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-    {world.lastError && <div role="alert" aria-live="polite">{world.lastError.text}</div>}
-    {latest?.state === "pending" && <div role="status" aria-live="polite">Saving huddle action…</div>}{latest?.state === "lost" && <div role="alert">{latest.problem}</div>}{latest?.state === "refused" && <div role="alert">{latest.problem}</div>}
-    {!world.huddleProjects.asked || !world.huddles.asked ? <div className="empty-state" role="status">Loading huddles…</div> : <div className="huddle-layout"><aside className="huddle-list" aria-label="Huddle sessions">{world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).length === 0 ? <div className="empty-state">No huddles yet.</div> : world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).map(s => <button className={`huddle-row${s.id === sessionId ? " selected" : ""}`} key={s.id} type="button" onClick={() => setSessionId(s.id)}><strong>{s.title}</strong><span>{s.state} · {s.unread ? `${s.unread} new notes` : "read"}</span><small>{new Date(s.startedAt).toLocaleString()}</small></button>)}</aside><div className="huddle-detail" aria-live="polite">{active ? <><div className="huddle-head"><span className="status-pill">{active.state}</span><h2>{active.title}</h2><p className="muted">{active.agenda}</p><div className="huddle-actions">{active.state === "active" && !active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleJoin", sessionId: active.id })}>Join</button>}{active.state === "active" && active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleLeave", sessionId: active.id })}>Leave</button>}{active.state === "active" && active.ownerId === world.me?.id && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleEnd", sessionId: active.id })}>End huddle</button>}</div></div><div className="huddle-presence" aria-label="Participants">{active.participants.map(p => <span className={p.present ? "present" : "left"} key={`${p.id}-${p.joinedAt}`}>{p.name} · {p.kind} {p.present ? "present" : "left"}</span>)}</div><div className="huddle-notes" role="feed" aria-label="Shared notes">{notes.length === 0 ? <div className="empty-state">No notes yet.</div> : notes.map(n => <article className="huddle-note" key={n.id}><strong>{n.deletedAt ? "Deleted note" : n.kind}</strong><span className="muted">{n.authorName} ({n.authorKind}) · {new Date(n.createdAt).toLocaleString()}</span><p>{n.body}</p>{n.links?.length > 0 && <div className="huddle-links" aria-label="Related links">{n.links.map((link, i) => <button key={`${n.id}-link-${i}`} className="linkish" type="button" disabled={link.available === false} title={link.available === false ? "Unavailable" : "Open related item"} onClick={() => onLink(link, active.projectId)}>{link.label ?? link.kind}{link.available === false ? " (unavailable)" : ""}</button>)}</div>}{!n.deletedAt && (n.authorId === world.me?.id || active.ownerId === world.me?.id) && <button className="linkish" type="button" onClick={() => client.huddleSend({ type: "huddleDeleteNote", noteId: n.id })}>Delete note</button>}</article>)}</div><form className="huddle-composer" onSubmit={addNote}><label className="field-label" htmlFor="huddle-kind">Type</label><select id="huddle-kind" className="input" value={kind} onChange={e => setKind(e.target.value as HuddleNoteKind)} disabled={active.state !== "active"}><option value="note">Note</option><option value="decision">Decision</option><option value="action">Action item</option></select><label className="field-label" htmlFor="huddle-note">Shared note</label><textarea id="huddle-note" className="input" value={body} onChange={e => setBody(e.target.value)} placeholder="Write a note for the team" required disabled={active.state !== "active"} /><button className="btn primary" disabled={active.state !== "active"}>Add note</button></form></> : <div className="empty-state">Choose a huddle.</div>}</div></div>}
-    <form className="huddle-start" onSubmit={start}><h2>Start a huddle</h2><label className="field-label" htmlFor="huddle-title">Title</label><input id="huddle-title" className="input" value={title} onChange={e => setTitle(e.target.value)} required /><label className="field-label" htmlFor="huddle-agenda">Agenda</label><textarea id="huddle-agenda" className="input" value={agenda} onChange={e => setAgenda(e.target.value)} required /><button className="btn primary" disabled={!projectId}>Start huddle</button></form></section>;
-}
 
 function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
@@ -16178,6 +20192,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
             {entries.map(entry => {
               const available = entry.state === "active" && !!entry.message;
               const pending = world.savedPending.includes(entry.messageId);
+              const savedPending = pending;
               const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Open source";
               const draft = editing[entry.id] ?? { note: entry.note ?? "", remindAt: safeReminderDate(entry.remindAt) };
               return <article key={entry.id} className={`notification-row source-${entry.state}`}>
@@ -16203,7 +20218,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
                       <label>Reminder date (no notification)<input type="date" value={draft.remindAt}
                         onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, remindAt: event.target.value } }))} /></label>
                       <button type="submit" className="linkish" disabled={pending}
-                        aria-busy={pending}>{pending ? "Saving details…" : "Save details"}</button>
+                        aria-busy={savedPending}>{pending ? "Saving details…" : "Save details"}</button>
                       <button type="button" className="linkish" onClick={() => setEditing(previous => {
                         const next = { ...previous };
                         delete next[entry.id];
@@ -16211,7 +20226,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
                       })}>Cancel</button>
                     </form>
                   </details>}
-                  <button type="button" className="linkish" disabled={pending} aria-busy={pending}
+                  <button type="button" className="linkish" disabled={pending} aria-busy={savedPending}
                     onClick={() => client.unsaveForLater(entry.messageId)}>{pending ? "Removing…" : "Remove"}</button>
                 </div>
               </article>;
@@ -16230,6 +20245,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
 
 
 type ForumMutationDraft = { title?: string; body?: string; reply?: string; tags?: string; links?: string; summary?: string; memberUserId?: string };
+
 function ForumScreen({ onOpenLink }: { onOpenLink: (link: ForumLink) => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const projects = world.forumProjects.projects;
@@ -16558,6 +20574,7 @@ function ActivityScreen({ openAt, onOpened }: {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [showAgents, setShowAgents] = useState(true);
   const [showPeople, setShowPeople] = useState(true);
+  const [commandFilter, setCommandFilter] = useState<CommandCenterFilter>("all");
   const [focusRunId, setFocusRunId] = useState<ID | null>(null);
 
   /* THE TRAIL USED TO FREEZE THE MOMENT IT WAS OPENED.
@@ -16580,11 +20597,33 @@ function ActivityScreen({ openAt, onOpened }: {
     onOpened?.();
   }, [openAt?.at, openAt?.runId, onOpened]);
 
+  useEffect(() => {
+    const newest = [...world.activity].reverse()
+      .filter(row => row.kind === "run_recorded" && row.refId)
+      .slice(0, RUN_HISTORY_LIMIT);
+    for (const row of newest) if (row.refId) client.askRun(row.refId);
+  }, [world.activity]);
+
   const focusRun = focusRunId ? world.runs[focusRunId] : undefined;
   const focusGone = focusRunId ? !!world.runsGone[focusRunId] : false;
 
   const rows = [...world.activity].reverse().filter(r =>
-    r.actorKind === "agent" ? showAgents : showPeople);
+    r.actorKind === "agent" ? showAgents : showPeople).filter(r => {
+      if (commandFilter === "all") return true;
+      const directTask = r.refId ? world.tasks.find(t => t.id === r.refId) : undefined;
+      const directRun = r.refId ? world.runs[r.refId] : undefined;
+      const directApproval = r.refId ? world.approvals.find(a => a.id === r.refId) : undefined;
+      const linkedTask = directTask ?? (directRun?.taskId
+        ? world.tasks.find(t => t.id === directRun.taskId)
+        : directApproval?.taskId ? world.tasks.find(t => t.id === directApproval.taskId) : undefined);
+      if (!linkedTask) return false;
+      return taskMatchesCommandCenterFilter({
+        task: linkedTask,
+        approvals: world.approvals,
+        runs: Object.values(world.runs),
+        meId: world.me?.id,
+      }, commandFilter);
+    });
 
   const days: { label: string; rows: typeof rows }[] = [];
   for (const r of rows) {
@@ -16598,9 +20637,14 @@ function ActivityScreen({ openAt, onOpened }: {
     <div className="activity">
       <header className="topbar">
         <h2>Activity</h2>
-        <span className="sub">What your agents are doing now, and everything they did before</span>
+        <span className="sub">Who did what, where, and what happened</span>
         <div className="grow" />
         <div className="filters">
+          <div className="seg command-center-filters" role="group" aria-label="Command center filters">
+            {([["all", "All"], ["mine", "Mine"], ["waiting", "Waiting for me"], ["failed", "Failed"], ["completed", "Completed"]] as const).map(([key, label]) => (
+              <button key={key} aria-pressed={commandFilter === key} onClick={() => setCommandFilter(key)}>{label}</button>
+            ))}
+          </div>
           <button className="chip is-pine" aria-pressed={showAgents}
             onClick={() => setShowAgents(v => !v)}>Agents</button>
           <button className="chip is-ultra" aria-pressed={showPeople}
@@ -16609,6 +20653,7 @@ function ActivityScreen({ openAt, onOpened }: {
       </header>
 
       <div className="act-body">
+        {!world.connected && <div className="empty-state command-center-offline" role="status">Cloud9 is offline. Activity filters use the last authorized records.</div>}
         {focusRunId && (
           <div className="act-focused-run" data-run={focusRunId} aria-label="Opened run">
             <span className="eyebrow">Opened from Team feed</span>
@@ -16624,7 +20669,11 @@ function ActivityScreen({ openAt, onOpened }: {
         <RightNowBoard />
 
         <div className="act-day"><span className="eyebrow">Before now</span></div>
-        {rows.length === 0 && (
+        {rows.length === 0 && world.activity.length > 0 && (
+          <EmptyTray title="No recorded activity matches this filter"
+            line="Try All to see every server-recorded activity row." />
+        )}
+        {rows.length === 0 && world.activity.length === 0 && (
           <EmptyTray title="Nothing has happened yet"
             line="Every message, job and go-ahead shows up here, newest first." />
         )}
@@ -16633,20 +20682,137 @@ function ActivityScreen({ openAt, onOpened }: {
             <div className="act-day"><span className="eyebrow">{day.label}</span></div>
             <div className="timeline">
               {day.rows.map(r => (
-                <div key={r.id} className={`actrow ${r.actorKind === "agent" ? "by-agent" : "by-human"}`}>
-                  <span className="actwho">
-                    {r.actorKind === "agent"
-                      ? <AgentFace name={r.actorName} size={28} />
-                      : <PersonFace name={r.actorName} size={28} />}
-                  </span>
-                  <span className="actdetail"><b>{r.actorName}</b>{r.detail}</span>
-                  <span className="actwhen">{clock(r.ts)}</span>
-                </div>
+                <ActivityTrailRow key={r.id} row={r} world={world} />
               ))}
             </div>
           </React.Fragment>
         ))}
       </div>
+    </div>
+  );
+}
+
+const ACTIVITY_STEP_PREVIEW = 140;
+const ACTIVITY_STEPS_SHOWN = 12;
+
+/** One trail row: who, what, where, and what happened. Commands stay closed. */
+function ActivityTrailRow({ row, world }: {
+  row: ActivityRecord; world: World;
+}): React.JSX.Element {
+  const linked = linkActivityRow(row, {
+    channels: world.channels,
+    tasks: world.tasks,
+    approvals: world.approvals,
+    runs: world.runs,
+    messages: world.messages,
+  });
+  const run = linked.run ?? (row.refId ? world.runs[row.refId] : undefined);
+  const facts = run && !linked.run ? { ...linked, run } : linked;
+  const gone = !!(row.refId && world.runsGone[row.refId]);
+  const tests = run?.tests ?? (run?.steps ? testFactsFromSteps(run.steps) : undefined);
+  const chips = activityOutcomeChips({
+    ...facts,
+    run: facts.run ? { ...facts.run, ...(tests?.length ? { tests } : {}) } : facts.run,
+  });
+  const inspectable = activityInspectableSteps(run?.steps);
+  const needsFetch = row.kind === "run_recorded" && !!row.refId && !run && !gone;
+  const canExpand = activityHasDetails(facts, row.kind) || needsFetch
+    || !!(run?.pullRequest || run?.branch || run?.commit);
+  const shownSteps = inspectable.slice(0, ACTIVITY_STEPS_SHOWN).map(step => ({
+    ...step,
+    detail: step.detail ? quoteOf(step.detail, ACTIVITY_STEP_PREVIEW) : undefined,
+  }));
+  const whoClass = row.actorKind === "agent" ? "by-agent"
+    : row.actorKind === "human" ? "by-human" : "by-system";
+  const where = facts.channelName
+    ? (facts.channelName === "Direct message" ? "Direct message" : `#${facts.channelName}`)
+    : undefined;
+
+  return (
+    <div className={`actrow ${whoClass}`} data-kind={row.kind} data-actor={row.actorKind}
+      data-outcome={run?.outcome}>
+      <span className="actwho">
+        {row.actorKind === "agent"
+          ? <AgentFace name={row.actorName} size={28} />
+          : <PersonFace name={row.actorName} size={28} />}
+      </span>
+      <div className="actdetail">
+        <b>{row.actorName}</b>
+        <span className="act-kind">{activityKindWords(row.kind)}</span>
+        <span className="act-what">{row.detail}</span>
+        {where && <span className="act-where">in {where}</span>}
+        {chips.length > 0 && (
+          <span className="act-facts" aria-label="What happened">
+            {chips.map(chip => (
+              <span key={chip.key} className={`act-fact${chip.key === "outcome" ? " is-outcome" : ""}`}>{chip.label}</span>
+            ))}
+          </span>
+        )}
+        {canExpand && (
+          <details className="act-inspect" onToggle={event => {
+            if ((event.currentTarget as HTMLDetailsElement).open && row.kind === "run_recorded" && row.refId) {
+              client.askRun(row.refId);
+            }
+          }}>
+            <summary>Commands, logs, and files</summary>
+            {needsFetch && <p className="act-inspect-empty">Fetching what it did…</p>}
+            {gone && <p className="act-inspect-empty">That record isn't there any more.</p>}
+            {run?.files && run.files.length > 0 && (
+              <div className="act-inspect-block">
+                <span className="act-kind">Files</span>
+                <ul className="act-file-list" data-act-files={run.files.length}>
+                  {run.files.map(file => <li key={file}>{file}</li>)}
+                </ul>
+              </div>
+            )}
+            {tests && tests.length > 0 && (
+              <div className="act-inspect-block">
+                <span className="act-kind">Tests</span>
+                <ul className="act-file-list">
+                  {tests.map((test, i) => (
+                    <li key={`${test.command}-${i}`}>
+                      {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {facts.approval?.detail && (
+              <div className="act-inspect-block">
+                <span className="act-kind">Go-ahead</span>
+                <p className="act-clip-inline">{quoteOf(facts.approval.detail, ACTIVITY_STEP_PREVIEW)}</p>
+              </div>
+            )}
+            {(run?.pullRequest || run?.branch || run?.commit) && run && (
+              <div className="act-inspect-block">
+                {run.pullRequest && <p className="act-clip-inline">{isLink(run.pullRequest)
+                  ? <a href={run.pullRequest} target="_blank" rel="noreferrer noopener">{run.pullRequest}</a>
+                  : run.pullRequest}</p>}
+                {run.branch && <p className="act-clip-inline">Branch {run.branch}</p>}
+                {run.commit && <p className="act-clip-inline">Commit {run.commit}</p>}
+              </div>
+            )}
+            {shownSteps.length > 0 && (
+              <ol className="act-step-list">
+                {shownSteps.map(step => (
+                  <li key={step.seq} className={step.ok === false ? "bad" : undefined}>
+                    <span>
+                      <span className="act-step-label">{step.label}</span>
+                      {step.detail && <span className="act-clip-inline">{step.detail}</span>}
+                    </span>
+                    {step.ok === true && <span className="act-step-mark">✓</span>}
+                    {step.ok === false && <span className="act-step-mark no">✕</span>}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {(!!run?.truncated || inspectable.length > ACTIVITY_STEPS_SHOWN) && (
+              <p className="act-inspect-empty">Some steps were left out to keep this small.</p>
+            )}
+          </details>
+        )}
+      </div>
+      <span className="actwhen">{clock(row.ts)}</span>
     </div>
   );
 }

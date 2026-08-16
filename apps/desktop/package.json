@@ -59,9 +59,12 @@
     "logo": "node ../../scripts/build-logo-assets.mjs",
     "electron": "electron .",
     "preview": "vite preview",
-    "test": "node --test electron/*.test.cjs",
+    "test": "node --test \"electron/**/*.test.cjs\"",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@cloud9/engine": "*",

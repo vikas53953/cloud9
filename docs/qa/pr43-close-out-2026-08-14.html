@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cloud9 — overnight close-out, Friday 14 Aug</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--ink:#16232e;--bg:#f6f8fa;--card:#fff;--line:#d8e0e8;--accent:#2c7fc4;--good:#1e7d4f;--warn:#9a6b00;--bad:#b03535;--muted:#5a6b7a;}
+  @media (prefers-color-scheme:dark){:root{--ink:#e6edf3;--bg:#0f171e;--card:#18232e;--line:#2f3d4a;--accent:#5aa5dd;--good:#5cc78f;--warn:#e3b341;--bad:#e07a7a;--muted:#93a4b3;}}
+  body{margin:0;padding:2rem 1rem 6rem;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,sans-serif;}
+  main{max-width:880px;margin:0 auto;}
+  h1{font-size:1.6rem;margin:.2rem 0 .3rem;}
+  .sub{color:var(--muted);margin:0 0 1.6rem;}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.2rem 1.4rem;margin-bottom:1.2rem;}
+  h2{font-size:1.12rem;margin:.1rem 0 .7rem;}
+  table{border-collapse:collapse;width:100%;font-size:.92rem;}
+  th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{color:var(--muted);font-weight:600;}
+  .ok{color:var(--good);font-weight:700;}
+  .warn{color:var(--warn);font-weight:700;}
+  .bad{color:var(--bad);font-weight:700;}
+  .imgrow{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.7rem;}
+  figure{margin:0;flex:1 1 260px;}
+  figure img{width:100%;border:1px solid var(--line);border-radius:8px;}
+  figcaption{font-size:.82rem;color:var(--muted);margin-top:.3rem;}
+  ul{margin:.4rem 0 .2rem;padding-left:1.2rem;}
+  li{margin-bottom:.35rem;}
+  code{background:rgba(127,127,127,.14);padding:.1rem .35rem;border-radius:5px;font-size:.88em;}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:.05rem .6rem;font-size:.8rem;color:var(--muted);margin-left:.4rem;}
+</style>
+</head>
+<body>
+<main>
+  <h1>Cloud9 — what got finished overnight</h1>
+  <p class="sub">Friday 14 Aug, ~1:30 am · every item below was checked by a second agent that did not write it · hover any box for 👍 / 👎 / 💬</p>
+
+  <section data-fb="Summary">
+    <h2>The short version</h2>
+    <p><b>Eight fixes are merged</b> into the release branch, each one reviewed and proven with real
+    measurements. The three problems you reported in person — buttons looking disabled, the layout
+    snapping back to Focused Chat, the truncated workspace name — are all <b>fixed and merged</b>.
+    The rest of the work is written up for Cursor/Grok in one document.</p>
+    <p class="warn">⚠ One thing to be clear about: the app installed on your PC is still the OLD build.
+    None of this is visible to you until the release chain runs (build → tests → QA → installer →
+    install → installed walk). That is step one for whoever continues — it's the first section of the
+    handoff document.</p>
+  </section>
+
+  <section data-fb="The eight merged fixes">
+    <h2>Merged — with a second agent's proof behind each</h2>
+    <table>
+      <tr><th>Fix</th><th>What you'll notice</th></tr>
+      <tr><td>Stuck-agent chip <span class="pill">PR 45</span></td><td>When an agent is blocked, the room header says so in every layout — you can't miss it anymore.</td></tr>
+      <tr><td>Who-can-reach-files <span class="pill">PR 45</span></td><td>The room's "Who's here" panel shows which agents can reach a file and what would fix it.</td></tr>
+      <tr><td>Honest engine messages <span class="pill">PR 46</span></td><td>The app no longer says "Claude isn't installed" when it simply couldn't check. And it finally keeps a log file, so problems can be diagnosed from evidence.</td></tr>
+      <tr><td>Real test gate <span class="pill">PR 44</span></td><td>Tests actually run on Windows now (they silently never did), Node version is enforced, and every code change gets tested automatically on GitHub.</td></tr>
+      <tr><td>Windows username bug <span class="pill">PR 48</span></td><td>The engine no longer refuses to work for usernames longer than 8 letters. Security check survived 28 attack attempts by the reviewer.</td></tr>
+      <tr><td>Chat + Files stays put <span class="pill">PR 47</span></td><td>Your chosen layout stays chosen — clicking elsewhere, pressing Escape while editing, or restarting the app no longer silently flips it back.</td></tr>
+      <tr><td>Drag-and-drop channels <span class="pill">PR 49</span></td><td>Reorder channels and sections by dragging. Click still opens; Escape cancels; keyboard still works and talks to screen readers.</td></tr>
+      <tr><td>Readable clicked buttons <span class="pill">PR 50</span></td><td>Clicking Home / Files / Activity etc. no longer greys them out — measured readable in every palette, both Windows modes.</td></tr>
+    </table>
+  </section>
+
+  <section data-fb="Before and after — clicked sidebar items">
+    <h2>See it: clicked items no longer look disabled</h2>
+    <div class="imgrow">
+      <figure><img src="lane-e/before-os-light-nord-rail.png" alt="Before: SETTINGS greyed out"><figcaption>Before — Settings looks switched off after clicking it</figcaption></figure>
+      <figure><img src="lane-e/after-os-light-nord-rail.png" alt="After: SETTINGS bright"><figcaption>After — bright and readable (measured 6.6–14.2:1 everywhere)</figcaption></figure>
+    </div>
+  </section>
+
+  <section data-fb="Two-row sidebar header — needs your verdict">
+    <h2>One visible change that needs your eye</h2>
+    <p>To show the full workspace name, the sidebar header is now <b>two rows</b> — name on top,
+    the three buttons underneath. At narrow widths the name and buttons genuinely cannot share one
+    row, so this was the honest trade. <b>If you don't like the look, say so here</b> and it becomes
+    a follow-up.</p>
+    <div class="imgrow">
+      <figure><img src="lane-f1/verify-before-head250.png" alt="Before: truncated name"><figcaption>Before — "Studio flo…"</figcaption></figure>
+      <figure><img src="lane-f1/verify-after-head250.png" alt="After: full name, two rows"><figcaption>After — full name, buttons on row two</figcaption></figure>
+    </div>
+  </section>
+
+  <section data-fb="Colour palettes — the big one still to come">
+    <h2>Still ahead: the palette overhaul (your top complaint)</h2>
+    <p>The audits measured <b>260 broken colour combinations</b> across the 16 palettes — that work is
+    specified and handed to Cursor (<code>docs/lanes/CURSOR-LANE-J1.md</code>). The merged fixes above
+    already repair the worst clicked-button cases, but the full fix is the palette rebuild.
+    The measured evidence page you can annotate: <code>docs/qa/ux-walk-2026-08-12/colour-audit.html</code>.</p>
+  </section>
+
+  <section data-fb="Handed to Cursor">
+    <h2>Handed to Cursor / Grok — one document drives it</h2>
+    <p>Tell Cursor: <b>"read <code>HANDOFF-PR43-CURSOR-2026-08-14.md</code> in the repo root and
+    continue from it."</b> It contains, in order: the release chain to run first, the two header
+    problems not yet started (duplicate Create button, the "V" icon), the palette rebuild, the flaky
+    relay test, and the full deferred list (including the Linux Stop-button bug, which doesn't affect
+    your Windows delivery).</p>
+  </section>
+
+  <section data-fb="Honest ledger">
+    <h2>Honest ledger</h2>
+    <ul>
+      <li class="ok">All 8 open lane PRs: merged after independent review. Nothing was merged unreviewed.</li>
+      <li class="warn">Release chain, installer, installed walk: <b>not run</b> — first job for the next session.</li>
+      <li class="warn">Codex was asked to fix the flaky relay test and produced nothing before the quota death — reassigned in the handoff.</li>
+      <li class="bad">The overnight auto-restart failed you twice. That's why the handoff is written so any platform can pick up cold — no reliance on timers.</li>
+      <li class="ok">Small follow-ups found by reviewers (announcement gaps in drag-and-drop, a search-filter quirk, two navigation highlights) are all logged in the handoff's ticket list — none are release blockers.</li>
+    </ul>
+  </section>
+</main>
+<script>
+/* Vikas review kit — feedback layer (inlined) */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+  render();
+})();
+</script>
+</body>
+</html>

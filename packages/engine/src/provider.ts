@@ -15,12 +15,15 @@ import {
 import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
 import type { OpenTurn } from "./toolbridge.js";
 import { envWithoutCredentials } from "./env.js";
-import { claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
+import { CLAUDE_ISOLATION_ENV, claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
 import { traceWalker, type EventMapper, type ProviderTrace, type RunUsage } from "./runrecord.js";
 import type { SessionBook } from "./sessionresume.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
 import type { RunStep } from "./runrecord.js";
+
+/** Built-in tools safe for a review: local inspection only, no remote actions. */
+export const REVIEW_READ_ONLY_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 /**
  * WHAT KIND OF TURN THIS IS — the difference between "write your next chat
@@ -59,6 +62,8 @@ export interface TurnBrief {
   workdir?: string;
   /** what the launcher will TRULY hand the harness, for this turn */
   supply?: Supply;
+  /** This turn must return only the bounded summary JSON, never chat prose. */
+  summaryOnly?: boolean;
   /** true when Cloud9's own tools are really in the agent's hands this turn */
   cloud9Tools?: boolean;
   /** the harness rendering this prompt; Codex has an admission gate, not a declared tool set */
@@ -90,6 +95,8 @@ export interface RespondInput extends TurnBrief {
    * Nothing about the approval law changes — a worktree is still entirely on
    * this computer, and pushing it anywhere is still asked about separately.
    */
+  /** A review turn narrows the provider to read-only tools without an approval card. */
+  reviewOnly?: boolean;
   /**
    * Optional: hand back what the agent actually did, parsed out of the CLI's
    * own stream (see runrecord.ts). A provider that cannot produce one simply
@@ -115,6 +122,8 @@ export interface RespondInput extends TurnBrief {
    * Same law as `onTrace`: a failure here may never cost the caller its answer.
    */
   onStep?: (steps: RunStep[]) => void;
+  /** Genuine provider response-text increments; never tool steps or reasoning. */
+  onResponseText?: (text: string) => void;
   /**
    * THIS TURN BELONGS TO A CONVERSATION THREAD, and may therefore continue the
    * harness's own session instead of starting a cold one (`sessionresume.ts`).
@@ -172,6 +181,10 @@ export interface ThreadContinuity {
 
 export interface ClaudeProvider {
   respond(input: RespondInput): Promise<string>;
+  /** True only when this route can apply a per-turn effort override. */
+  supportsEffort?(): boolean;
+  /** True only when this provider exposes genuine incremental response text. */
+  canStreamResponse?(): boolean;
   /**
    * CAN THIS PROVIDER TAKE A PLAN-ONLY TURN — one where the agent says what it
    * intends and does nothing?
@@ -255,10 +268,38 @@ export class ProviderOutputMissingError extends Error {
  * trace (harness-signin.md decision 3, FR-TL-005).
  */
 export class HarnessUnavailableError extends Error {
-  constructor(public harness: string, message: string) {
+  constructor(
+    public harness: string,
+    message: string,
+    /**
+     * What this computer was actually found to have, when anything was found.
+     * Absent means nobody looked, and the reply falls back to the generic
+     * sentence — see `harnessDisconnectedReply`.
+     */
+    public readonly readiness?: HarnessReadiness,
+  ) {
     super(message);
     this.name = "HarnessUnavailableError";
   }
+}
+
+/**
+ * WHAT THE APP ACTUALLY KNOWS about a harness at the moment a turn is refused.
+ *
+ * Booleans and nothing else, on purpose. `HarnessInfo.detail` reads well on the
+ * Settings card but it can carry the signed-in ACCOUNT, and a chat message is
+ * read by everyone in the channel — the same law `sanitizeForChat` exists for.
+ * So the sentence below is built here, out of fixed words and these flags.
+ */
+export interface HarnessReadiness {
+  /** the app is on this computer */
+  installed: boolean;
+  /** it reports a logged-in account, or Cloud9 holds a key for it */
+  signedIn: boolean;
+  /** it is here but did NOT say whether it is signed in — the probe gave up */
+  unsure?: boolean;
+  /** this computer has been looked at at least once */
+  detected: boolean;
 }
 
 /** A capability mix that a provider cannot safely honor; the turn did not run. */
@@ -302,9 +343,99 @@ export class InstructionsNotSavedError extends Error {
   }
 }
 
-/** What the agent says when its harness isn't connected. No jargon. */
+/**
+ * What the agent says when its harness isn't connected and NOTHING is known
+ * about why. No jargon.
+ */
 export const HARNESS_DISCONNECTED_REPLY =
   "my engine isn't connected — open Settings and sign in, then ask me again.";
+
+/**
+ * THE SAME REFUSAL, BUT TRUE ABOUT THIS COMPUTER.
+ *
+ * ================================================================
+ * WHY THIS EXISTS (2026-08-12, installed blocker 3)
+ * ================================================================
+ *
+ * Every reason a turn cannot run used to come out as the one sentence above:
+ * "open Settings and sign in". On a machine where the app is not installed at
+ * all that sends him to a sign-in button for an app he does not have. And on a
+ * machine where Claude IS installed and IS signed in, but the sign-in probe has
+ * not answered yet (`HarnessInfo.unsure` — measured at 77 seconds on this
+ * computer, see `harness.ts`), it tells him to fix something that is not
+ * broken, which is the 2026-08-05 report happening again one surface over.
+ *
+ * `AGENTS.md`: a refusal must say WHY and say HOW TO ENABLE IT. One sentence
+ * cannot do that for four different situations, so there are four sentences,
+ * chosen from what was actually found. Every one of them is still a REFUSAL —
+ * nothing here makes an agent answer when it cannot.
+ *
+ * Nothing from the harness's own text is forwarded: see `HarnessReadiness`.
+ */
+/**
+ * The app's name as a person writes it. A harness this file has never heard of
+ * gets its own name back, tidied — NOT "Claude". `harness === "codex" ? "Codex"
+ * : "Claude"` would tell somebody running a third harness to go and sign in to
+ * Claude, which is a confident sentence about the wrong program.
+ */
+function harnessAppName(harness: string): string {
+  const known: Record<string, string> = { claude: "Claude", codex: "Codex" };
+  const name = (harness ?? "").trim();
+  if (known[name.toLowerCase()]) return known[name.toLowerCase()];
+  // its own name, kept to plain characters so nothing unexpected reaches a room
+  const plain = name.replace(/[^A-Za-z0-9 .-]/g, "").slice(0, 24).trim();
+  return plain ? plain.charAt(0).toUpperCase() + plain.slice(1) : "your agent's engine";
+}
+
+export function harnessDisconnectedReply(
+  harness: string, readiness?: HarnessReadiness,
+): string {
+  // Nobody wired the facts in (an older host, a bare engine in a test). The
+  // generic sentence is the honest answer when nothing is known.
+  if (!readiness) return HARNESS_DISCONNECTED_REPLY;
+  const app = harnessAppName(harness);
+  if (!readiness.detected) {
+    return "my engine isn't connected yet — Cloud9 is still looking at what this computer " +
+      "has. Give it a moment and ask me again.";
+  }
+  /* ================================================================
+   * "I COULD NOT TELL" IS ASKED BEFORE "IT IS NOT THERE" (2026-08-12).
+   * ================================================================
+   *
+   * This order is the whole point and it was the wrong way round on the first
+   * pass. A probe that ran out of patience leaves `installed: false` — nothing
+   * proved otherwise — but that is an ABSENCE OF AN ANSWER, not an answer. Ask
+   * "is it installed?" first and an unanswered probe gets reported as a
+   * finding: "the Claude app isn't on this computer. Install it." Said to a
+   * person who has it installed, that is a positively false claim about his own
+   * machine, and it is the 2026-08-05 report ("Settings told me to install an
+   * app I already have") reappearing in the agent's own voice.
+   *
+   * So "unsure" is answered first, and it is never a claim about presence in
+   * either direction. Which probe gave up is worth saying, because the two lead
+   * to different next steps.
+   */
+  if (readiness.unsure) {
+    return readiness.installed
+      ? `my engine isn't connected yet — ${app} is on this computer, but it hasn't said ` +
+        "whether it is signed in. Cloud9 is asking again; give it a moment and ask me again, " +
+        "or open Settings and sign in."
+      : `my engine isn't connected yet — Cloud9 asked ${app} on this computer and it hasn't ` +
+        "answered yet, so nothing is settled either way. Cloud9 is asking again; give it a " +
+        "moment and ask me again.";
+  }
+  if (!readiness.installed) {
+    return `my engine isn't connected — the ${app} app isn't on this computer. Install it, ` +
+      `or save a ${app} key in Settings, then ask me again.`;
+  }
+  if (!readiness.signedIn) {
+    return `my engine isn't connected — ${app} is on this computer but isn't signed in. ` +
+      `Open Settings, sign in to ${app}, then ask me again.`;
+  }
+  // Found, signed in, and STILL no provider. Nothing is known that would make a
+  // more specific sentence true, so it does not invent one.
+  return HARNESS_DISCONNECTED_REPLY;
+}
 
 /**
  * The ONE place raw error text is turned into something a chat message may
@@ -315,7 +446,11 @@ export const HARNESS_DISCONNECTED_REPLY =
  */
 export function sanitizeForChat(err: unknown, where: string): string {
   console.error(`[engine] ${where}:`, err);
-  if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
+  // Still one refusal, still nothing from the error's own text — but it names
+  // the situation this computer is actually in. See `harnessDisconnectedReply`.
+  if (err instanceof HarnessUnavailableError) {
+    return harnessDisconnectedReply(err.harness, err.readiness);
+  }
   if (err instanceof HarnessAbilityBoundaryError) return err.message;
   // Built from capability LABELS out of the table and fixed words — no path, no
   // argv, no error code — and it is the one thing the owner has to hear, since
@@ -598,7 +733,8 @@ export function splitAgentPrompt(agent: AgentDef, turn: TurnBrief): AgentPromptP
         : "") +
       `\n${turn.resumedContext ? RESUMED_CONVERSATION_HEADING : CONVERSATION_HEADING}` +
       `\n${turn.context}\n\n` +
-      HOW_TO_ANSWER[kind](agent.name),
+      HOW_TO_ANSWER[kind](agent.name) +
+      (turn.summaryOnly ? `\n\n${SUMMARY_OUTPUT_INSTRUCTION}` : ""),
   };
 }
 
@@ -683,6 +819,12 @@ const HOW_TO_ANSWER: Record<PromptTurnKind, (name: string) => string> = {
     `Do not prefix your reply with your own name.`,
 };
 
+const SUMMARY_OUTPUT_INSTRUCTION =
+  `This is an explicit thread-summary turn. Return ONLY one JSON object, with no markdown, ` +
+  `private reasoning, or commentary: {"decisions":[],"openQuestions":[],"nextActions":[]}. ` +
+  `Use at most 8 concise strings in each array, each no longer than 320 characters. ` +
+  `If a category has no supported fact, leave its array empty. Do not invent facts.`;
+
 /**
  * Canned answers, for tests, QA and demo mode.
  *
@@ -692,7 +834,7 @@ const HOW_TO_ANSWER: Record<PromptTurnKind, (name: string) => string> = {
  * flag or future caller can produce an unlabelled fake.
  */
 export class MockProvider implements ClaudeProvider {
-  async respond({ agent, trigger, triggerAuthor, abortController }: RespondInput): Promise<string> {
+  async respond({ agent, trigger, triggerAuthor, abortController, onStep }: RespondInput): Promise<string> {
     /* The installed-app and browser walks need one deliberately stoppable demo
        turn. Ordinary canned replies stay instant; the explicit human phrase
        below holds only demo work, and uses the same AbortController as the real
@@ -700,6 +842,10 @@ export class MockProvider implements ClaudeProvider {
        that has already resolved and can only report a false product failure. */
     const deliberatelyStoppableDemo = /\btake your time\b/i.test(trigger);
     if (deliberatelyStoppableDemo && abortController) {
+      // Stop is offered only after public provider activity proves this turn is
+      // live. This is the truthful activity fact for the labelled ten-second
+      // demo turn; real providers continue to report only their own events.
+      onStep?.([{ seq: 1, kind: "note", label: "Demo work is in progress" }]);
       await new Promise<void>((resolve, reject) => {
         const signal = abortController.signal;
         const stopped = () => {
@@ -716,6 +862,9 @@ export class MockProvider implements ClaudeProvider {
     }
     return DEMO_REPLY_PREFIX + this.cannedBody({ agent, trigger, triggerAuthor });
   }
+
+  canStreamResponse(): boolean { return false; }
+  supportsEffort(): boolean { return false; }
 
   private cannedBody(
     { agent, trigger, triggerAuthor }: Pick<RespondInput, "agent" | "trigger" | "triggerAuthor">,
@@ -873,17 +1022,22 @@ export class SdkProvider implements ClaudeProvider {
     private queryOverride?: SdkQuery,
   ) {}
 
+  canStreamResponse(): boolean { return true; }
+
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir } = input;
-    const offeredRoots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
-    const offeredMcpConfigPath = this.opts.mcpConfigPath?.(agent.id);
+    // A review is deliberately independent of the stored owner grants. Do not
+    // invoke these callbacks in review mode: they may load a credential file or
+    // create a remote client before the SDK ever receives its options.
+    const offeredRoots = input.reviewOnly ? [] : (this.opts.wholeComputerRoots?.(agent.id) ?? []);
+    const offeredMcpConfigPath = input.reviewOnly ? undefined : this.opts.mcpConfigPath?.(agent.id);
     const granted = grantedSupply(agent, {
       wholeComputerRoots: offeredRoots,
       mcpConfigPath: offeredMcpConfigPath,
     });
     const roots = granted.wholeComputerRoots ?? [];
     const mcpConfigPath = granted.mcpConfigPath;
-    const doorway = input.channelId
+    const doorway = input.channelId && !input.reviewOnly
       ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
       : undefined;
     const parts = splitAgentPrompt(agent, {
@@ -898,14 +1052,23 @@ export class SdkProvider implements ClaudeProvider {
       ...mcpServersFromFile(mcpConfigPath),
       ...(doorway ? cloud9McpServer(doorway) : {}),
     };
-    const tools = [...claudeToolsFor(agent), ...(doorway ? cloud9ToolNames() : [])];
+    const built = input.reviewOnly
+      ? claudeToolsFor(agent).filter(tool => REVIEW_READ_ONLY_TOOLS.includes(tool as typeof REVIEW_READ_ONLY_TOOLS[number]))
+      : claudeToolsFor(agent);
+    const tools = [...built, ...(doorway ? cloud9ToolNames() : [])];
     // SAME ISOLATION AS THE CLI PATH for this agent's setup mode: auto-memory
     // env from claudeSetupEnv, slash-commands / settings / strict MCP from
     // claudeSetupSdkOptions (maps claudeSetupFlags). Empty when the switch is
     // ON so his setup loads the way the CLI path would.
-    const isolation = claudeSetupSdkOptions(agent);
+    const isolation = input.reviewOnly
+      ? {
+        settingSources: [] as const,
+        strictMcpConfig: true as const,
+        extraArgs: { "disable-slash-commands": null } as const,
+      }
+      : claudeSetupSdkOptions(agent);
     const env = envWithoutCredentials(process.env, {
-      ...claudeSetupEnv(agent),
+      ...(input.reviewOnly ? CLAUDE_ISOLATION_ENV : claudeSetupEnv(agent)),
       ...(this.creds.apiKey ? { ANTHROPIC_API_KEY: this.creds.apiKey } : {}),
       ...(this.creds.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.creds.oauthToken } : {}),
     });
@@ -914,7 +1077,9 @@ export class SdkProvider implements ClaudeProvider {
       systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
       tools,
       allowedTools: tools,
-      disallowedTools: deniedClaudeTools(agent),
+      disallowedTools: input.reviewOnly
+        ? claudeToolsFor(agent).filter(tool => !built.includes(tool))
+        : deniedClaudeTools(agent),
       permissionMode: "dontAsk",
       ...(isolation.settingSources ? { settingSources: [...isolation.settingSources] } : {}),
       ...(isolation.strictMcpConfig ? { strictMcpConfig: true } : {}),
@@ -934,6 +1099,19 @@ export class SdkProvider implements ClaudeProvider {
     try {
       for await (const message of query({ prompt: parts.turn, options })) {
         const event = message as Record<string, unknown>;
+        // The SDK's stream_event/text_delta is the only provider signal that
+        // proves an answer increment. Assistant snapshots and thinking blocks
+        // are intentionally excluded so the preview cannot fake typing or
+        // expose private reasoning.
+        if (event.type === "stream_event") {
+          const raw = event.event as Record<string, unknown> | undefined;
+          const delta = raw?.delta as Record<string, unknown> | undefined;
+          const text = delta?.type === "text_delta" ? delta.text : undefined;
+          if (typeof text === "string" && text.length > 0) {
+            try { input.onResponseText?.(text); }
+            catch (err) { console.error("[engine] SDK response preview watcher failed:", err); }
+          }
+        }
         if (event.type === "result") sawResult = true;
         const steps = walker.feed(JSON.stringify(event));
         if (steps.length) {

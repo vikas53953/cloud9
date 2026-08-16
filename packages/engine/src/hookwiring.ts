@@ -126,7 +126,13 @@ export function engineActions(
     // rule. An agent's own note about itself would be `source: "agent"`, and
     // conflating the two is how a hook's text could later read as something the
     // agent worked out for itself.
-    note({ agentId, text }) {
+    note({ agentId, channelId, text }) {
+      if (channelId !== undefined) {
+        if (!engine.saveOwnerMemoryNote(agentId, channelId, text)) {
+          throw new Error(`channel memory policy refused a hook's note for agent ${agentId}`);
+        }
+        return;
+      }
       const note: MemoryNote = {
         id: newMemoryId(), agentId, kind: "fact",
         text: text.trim().slice(0, 500), createdAt: Date.now(), source: "owner",

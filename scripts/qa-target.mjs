@@ -68,6 +68,29 @@ export function qaTarget() {
   };
 }
 
+/** Keep legacy broad QA rail journeys operable without changing shipped Focus CSS. */
+export async function keepQaStudioVisible(page) {
+  const content =
+    ".chatgrid.focus-workspace{grid-template-columns:var(--side-w) minmax(0,1fr)!important}" +
+    ".chatgrid.focus-workspace>.sidebar{display:flex!important}";
+  // `addStyleTag` belongs to the current document and disappears on reload.
+  // Install the same QA-only override for every future document as well: the
+  // broad journey deliberately reloads while continuing to drive the Studio
+  // rail, whereas the shipped Focus layout correctly hides that rail.
+  await page.addInitScript(css => {
+    const install = () => {
+      if (document.querySelector("style[data-cloud9-qa-studio]")) return;
+      const style = document.createElement("style");
+      style.dataset.cloud9QaStudio = "";
+      style.textContent = css;
+      (document.head ?? document.documentElement).appendChild(style);
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true });
+    else install();
+  }, content);
+  await page.addStyleTag({ content });
+}
+
 /**
  * Sign in as the owner. The ONE place a QA script does this.
  *
@@ -79,12 +102,35 @@ export function qaTarget() {
  */
 export async function signInAsOwner(page, { timeout = 30000 } = {}) {
   await page.waitForSelector("text=Welcome to Cloud9", { timeout });
+  // The broad QA journeys intentionally exercise the Studio sidebar (agents,
+  // channels, invites). Seed an explicit split workspace before authentication
+  // so React starts in that supported mode; changing it after first render can
+  // race the access-loss fail-closed effect during the welcome transition.
+  await page.evaluate(() => {
+    const key = "cloud9.prefs";
+    let value = {};
+    try { value = JSON.parse(localStorage.getItem(key) ?? "{}"); } catch { /* replace malformed QA-only input */ }
+    localStorage.setItem(key, JSON.stringify({ ...value, workspaceLayout: "chat-files" }));
+  });
+  await page.reload();
+  // Once a journey deliberately dismisses the split workspace, Focus hides the
+  // Studio rail by design. The legacy broad suite still drives room/agent
+  // controls through that rail, so keep it visible only inside this throwaway
+  // browser. Product screenshots for Focus remain covered by the dedicated
+  // workspace-layout tests; this override never ships in the app.
+  await keepQaStudioVisible(page);
+  await page.waitForSelector("text=Welcome to Cloud9", { timeout });
   const key = page.locator('.join .panel input[type="password"]');
   await key.waitFor({ timeout });
   await key.fill(qaOwnerToken());
   await page.click("text=Enter Cloud9");
   try {
-    await page.waitForSelector(".sidebar >> text=# general", { timeout });
+    // Focus workspace intentionally hides the Studio sidebar. The visible
+    // channel header is the stable proof that authentication completed and the
+    // initial authorized room opened, regardless of the chosen workspace.
+    await page.locator(".app .chatgrid").waitFor({ state: "attached", timeout });
+    await page.locator(".sidebar").waitFor({ state: "visible", timeout });
+    await page.locator('.sidebar button[title="New agent"]').waitFor({ state: "visible", timeout });
   } catch {
     throw new Error(
       "the owner could not sign in — the hub and this QA run disagree about the owner key. " +

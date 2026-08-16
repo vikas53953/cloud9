@@ -135,7 +135,7 @@ export interface Hook {
  */
 export interface HookActions {
   say(a: { agentId: ID; channelId: ID; text: string }): void;
-  note(a: { agentId: ID; text: string }): void;
+  note(a: { agentId: ID; channelId?: ID; text: string }): void;
   job(a: { agentId: ID; channelId: ID; title: string }): void;
   command(a: { agentId: ID; command: string }): void;
 }
@@ -310,7 +310,7 @@ export class HookBook {
           return this.done(hook, `said something in the conversation`);
         }
         case "note": {
-          this.opts.actions.note?.({ agentId: action.agentId, text: fill(action.text, fact) });
+          this.opts.actions.note?.({ agentId: action.agentId, ...(channelId ? { channelId } : {}), text: fill(action.text, fact) });
           return this.done(hook, `wrote a note into ${agent.name}'s memory`);
         }
         case "job": {

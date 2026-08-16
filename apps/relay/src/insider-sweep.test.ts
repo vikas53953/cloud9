@@ -265,10 +265,16 @@ test("a non-owner cannot decide an approval for someone else's agent", async () 
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     kind: "action" as const,
+    revision: 0,
+    approvalEpoch: "sweep-approval-epoch",
   };
   relay.store.saveApproval(approval);
 
-  await refuses(neha, { type: "decideApproval", approvalId: approval.id, decision: "approved" },
+  await refuses(neha, {
+    type: "decideApproval", approvalId: approval.id, decision: "approved",
+    expectedRevision: approval.revision, approvalEpoch: approval.approvalEpoch,
+    requestId: "sweep-outsider-approval",
+  },
     "only the agent's owner");
   assert.equal(relay.store.approval(approval.id)!.status, "pending");
 

@@ -54,6 +54,9 @@ async function say(client: TestClient, channelId: string, text: string) {
 }
 
 async function task(owner: TestClient, engine: TestClient, agentId: string, channelId: string) {
+  owner.send({ type: "addMembers", channelId, memberIds: [agentId] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channelId && f.channel.memberIds.includes(agentId));
   owner.send({ type: "createTask", agentId, channelId, title: "find three villas in Goa" });
   const t = await owner.wait<Extract<ServerFrame, { type: "task" }>>(f => f.type === "task");
   return t.task;

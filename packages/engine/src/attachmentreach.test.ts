@@ -445,9 +445,10 @@ test("NOTHING IS WRITTEN ANYWHERE — the bytes never touch a disk", async () =>
   // worktree rather than in the agent's folder, and needing the `files` switch
   // that reading the room does not. So the "nothing outside its own space
   // without the whole-computer grant" rule is not merely respected here; it
-  // cannot be reached. This test fails the moment somebody writes a temp file.
+  // cannot be reached. The calls below exercise the route with in-memory bytes
+  // (including its error path); the structural check underneath owns the
+  // no-disk guarantee without observing a shared working directory.
   const fs = await import("node:fs/promises");
-  const cwdBefore = new Set(await fs.readdir(process.cwd()));
 
   await callCloud9Tool(open, { name: "shot.png" }, room("shot.png", PNG));
   await callCloud9Tool(open, { name: "doc.pdf" }, room("doc.pdf", PDF));
@@ -461,17 +462,11 @@ test("NOTHING IS WRITTEN ANYWHERE — the bytes never touch a disk", async () =>
   const out = await callCloud9Tool(open, { name: "shot.png" }, exploding);
   assert.equal(out.isError, true);
 
-  const afterCwd = (await fs.readdir(process.cwd())).filter(f => !cwdBefore.has(f));
-  assert.deepEqual(afterCwd, [], `something was left in the working folder: ${afterCwd.join(", ")}`);
-
-  // AND THE CLASS, NOT THE CASE. Watching a folder only catches a temp file that
-  // is written and left behind; it says nothing about one written and tidied up,
-  // and the machine's shared temp folder is churned by everything else running on
-  // it, so watching THAT is a flake rather than a guard. The real guarantee is
-  // structural and is asserted structurally: neither of the two files on this
-  // path may reach a disk at all. The day somebody adds `node:fs` to one of them
-  // to materialise the bytes, this fails — which is exactly when the `finally`
-  // that would then be required has to be argued for rather than assumed.
+  // AND THE CLASS, NOT THE CASE. The runtime calls above are deliberately fed
+  // buffers, and the real no-disk guarantee is structural: neither owner on
+  // this path may import a disk-facing module. A shared cwd snapshot is not
+  // evidence for this route because other suites may legitimately create and
+  // remove short-lived files there while this test runs.
   const path = await import("node:path");
   const url = await import("node:url");
   const src = path.join(

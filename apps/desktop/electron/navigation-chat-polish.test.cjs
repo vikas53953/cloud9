@@ -69,7 +69,7 @@ test("a channel opens without a persistent rail and opts into room details", () 
 
   assert.doesNotMatch(app, /<ChannelRail\b/, "ChannelRail remains retired from the default chat tree");
   assert.match(app, /const \[detailsOpen, setDetailsOpen\] = useState\(false\)/);
-  assert.match(app, /className=\{`chatgrid\$\{isDm && !threadRoot && !detailsOpen \? " no-aside" : ""\}/);
+  assert.match(app, /className=\{`chatgrid\$\{studioCollapsed \? " studio-collapsed" : ""\}/);
   assert.match(app, /active && !threadRoot && detailsOpen && \(/,
     "the details panel is rendered only after the explicit opt-in");
 });
@@ -100,6 +100,20 @@ test("actions and emoji popovers close on Escape and click-away", () => {
   assert.match(app, /useClickAwayCloses\(emojiHoldRef, \(\) => setEmojiOpen\(false\), emojiOpen\)/);
   assert.match(app, /aria-label="Tools and slash commands"/);
   assert.match(app, /aria-label="Add an emoji"/);
+});
+
+test("room detail click-away cannot unregister unsaved work before navigation asks", () => {
+  const app = read("App.tsx");
+  assert.match(app, /const requestClose = useCallback\(\(\) => attemptLeave\(onClose\)/);
+  assert.match(app, /const leaveAtPointer = leaveAsk/);
+  assert.match(app, /if \(leaveAsk !== leaveAtPointer\) return/);
+  assert.match(app, /useClickAwayCloses\(panelRef, closeAfterOutsideClick, true\)/);
+  assert.match(app, /useEscapeCloses\(requestClose, true\)/);
+  assert.match(app, /aria-label="Close room details" onClick=\{requestClose\}/);
+  assert.match(app, /roomdesc-input[\s\S]*infoSettled\.current = false/);
+  assert.match(app, /if \(detailsOpen\) \{\s*attemptLeave\(\(\) => setDetailsOpen\(false\)\)/);
+  assert.match(app, /if \(detailsOpen\) attemptLeave\(go\)/,
+    "opening a thread must not unmount dirty room details before asking");
 });
 
 test("the emoji picker is searchable and category-based", () => {
@@ -151,8 +165,11 @@ test("appearance mode, palette, and thread layout are separate durable preferenc
   assert.match(app, /Dark/);
   assert.match(app, /Focus/);
   assert.match(app, /Split/);
-  assert.match(app, /const visibleMode = resolvedAppearanceMode\(p\.appearanceMode\)/);
+  assert.match(app, /const effectiveMode = previewMode \?\? p\.appearanceMode/);
   assert.match(app, /data-palette-mode=\{visibleMode\}/);
+  assert.match(app, /ACCENT_PRESETS/);
+  assert.match(app, /Apply theme/);
+  assert.match(app, /Revert preview/);
   assert.match(app, /function migratePrefs/);
   assert.match(app, /legacy === "light"/);
   assert.match(app, /legacy === "dark"/);
@@ -176,8 +193,10 @@ test("the shell keeps the top drag strip and live progress contract inspectable"
   assert.match(css, /\.window-drag-strip/);
   assert.match(css, /-webkit-app-region:drag/);
   assert.match(app, /data-live-progress="true"/);
-  assert.match(app, /<WorkingElapsed \/>/,
-    "a provider without live steps should still expose truthful elapsed wait time");
+  assert.doesNotMatch(app, /<WorkingElapsed \/>/,
+    "raw agent status must not create an unanchored working card");
+  assert.match(app, /provider or a run that cannot stream produces no live view whatsoever/,
+    "the room must stay quiet rather than inventing activity for a turn without public steps");
   assert.match(app, /Working elapsed/);
   assert.match(app, /now - row\.startedAt/,
     "streamed elapsed time should use the hub timestamp for the first observed step");
@@ -185,6 +204,61 @@ test("the shell keeps the top drag strip and live progress contract inspectable"
     "private model reasoning must never be exposed as a UI disclosure");
   assert.match(app, /data-stop-agent=\{row\.agentId\}/);
   assert.match(css, /\.live-progress-rail/);
+});
+
+test("inline agent activity is delayed, expandable, and never renders live private detail", () => {
+  const app = read("App.tsx");
+  assert.match(app, /setTimeout\(\(\) => setShown\(true\), 650\)/,
+    "short turns must not flash a working card");
+  assert.match(app, /<details key=\{row\.agentId\} className="liveturn"/,
+    "the public activity list is compact until a person expands it");
+  assert.match(app, /steps=\{row\.steps\.map\(step => \(\{ \.\.\.step, detail: undefined \}\)\)\}/,
+    "live activity must not expose provider reasoning/detail text");
+});
+
+test("human typing is an ephemeral, channel-scoped signal rather than a message", () => {
+  const app = read("App.tsx");
+  const store = read("store.ts");
+  const css = read("styles.css");
+  assert.match(store, /humanTyping: Record<ID, HumanTyping\[\]>/);
+  assert.match(store, /setTyping\(channelId: ID, typing: boolean\)/);
+  assert.match(store, /case "typing":\s*this\.noteHumanTyping\(frame\.typing\)/);
+  assert.match(store, /this\.clearHumanTyping\(undefined, undefined, false\)/,
+    "a reconnect must clear old ephemeral typing rows");
+  assert.match(store, /A hub switch is a new live session[\s\S]*?this\.world\.connected = false;/,
+    "a hub switch must let a focused composer re-advertise after welcome");
+  assert.match(app, /client\.setTyping\(channel\.id,/);
+  assert.match(app, /humanTyping\.length > 0/);
+  assert.match(app, /is typing/);
+  assert.match(css, /\.typing-indicator/);
+});
+
+test("the composer restores scoped text drafts without claiming files survive restart", () => {
+  const app = read("App.tsx");
+  const store = read("store.ts");
+  const css = read("styles.css");
+  assert.match(app, /from "\.\/chatdrafts\.js"/);
+  assert.match(app, /userId: world\.me\.id, channelId: channel\.id/);
+  assert.match(app, /Hydrate before this scope may write/);
+  assert.match(app, /clearChatDraft\(draftScope\)/,
+    "a successful send must remove the matching text draft");
+  assert.match(app, /Restoration may fill an empty box[\s\S]*?if \(text\.length === 0\)/,
+    "a late durable draft must never overwrite newer text already being typed");
+  assert.match(app, /browser cannot\r?\n\s*restore a File safely after restart/,
+    "attachment persistence must not be misrepresented");
+  assert.match(app, /data-draft-status/);
+  assert.match(css, /\.composer-draft-status\{color:var\(--ink-2\);font-size:12px;/,
+    "draft recovery state must remain readable on light theme surfaces");
+  assert.match(store, /canonicalDraftThreadId\(threadId\)/,
+    "reply-child draft requests must resolve to the root thread scope");
+  assert.match(store, /const canonicalThreadId = this\.canonicalDraftThreadId\(threadId\)/,
+    "list/remove/reconcile requests must use the canonical root id");
+  assert.match(store, /listDrafts\([\s\S]*?refused: why => \{ this\.draftRequests\.delete\(requestId\)/,
+    "a refused draft list must settle its request so a late frame cannot mutate state");
+  assert.match(store, /private uploadThreadId\(threadId\?: ID\)/,
+    "upload trays must share the canonical root thread scope");
+  assert.match(store, /const scopeThreadId = this\.uploadThreadId\(threadId\)/,
+    "attach/send/clear upload paths must normalize reply-child ids");
 });
 
 test("the new rail and tools drawer have explicit hierarchy and focus states", () => {
@@ -210,4 +284,14 @@ test("sending a message follows the newest content immediately", () => {
     "the send control should stay compact and arrow-led");
   assert.match(app, /<span className="sr-only">\{busy/,
     "the compact send control still needs an accessible name");
+});
+
+test("focus read recheck uses the chat scroll container bounds", () => {
+  const app = read("App.tsx");
+  const focus = app.slice(app.indexOf("/* Re-check only rows"), app.indexOf("const roomRef"));
+  assert.match(focus, /const rootRect = root\?\.getBoundingClientRect\(\)/);
+  assert.match(focus, /rect\.top >= rootRect\.top && rect\.bottom <= rootRect\.bottom/,
+    "focus must not treat rows clipped by the .msgs container as visible");
+  assert.doesNotMatch(focus, /window\.innerHeight/,
+    "the viewport check must not use the window when .msgs is scrolled");
 });

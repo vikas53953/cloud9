@@ -175,6 +175,24 @@ test("a card that is still pending is not an answer", async () => {
   d.giveUpAll("test over");
 });
 
+test("an edited checkpoint remains pending and carries only the exact approved revision", async () => {
+  const { d, sent } = desk();
+  const answer = d.ask({
+    agent: agent(), channelId: "ch1",
+    facts: { action: "push", branch: "cloud9/a1-x", commits: 1 },
+  });
+  receipt(d, sent);
+  const pending = card({ instructions: "revised instructions", revision: 1, approvalEpoch: "ae_new" });
+  d.onApproval(pending);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(d.pending, 1, "a revision update is not a decision");
+  d.onApproval({ ...pending, status: "approved" });
+  const out = await answer;
+  assert.equal(out.approved, true);
+  assert.equal(out.instructions, "revised instructions");
+  assert.equal(out.revision, 1);
+});
+
 // ------------------------------------------------- it does not block or spin
 
 test("several agents wait at once and the engine keeps going", async () => {

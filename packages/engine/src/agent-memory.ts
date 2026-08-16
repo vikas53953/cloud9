@@ -502,6 +502,9 @@ export function validateNote(value: unknown): string | null {
   if (n.runId !== undefined && (typeof n.runId !== "string" || !isSafeStoredId(n.runId))) {
     return "a run link must be a safe id";
   }
+  if (n.channelId !== undefined && (typeof n.channelId !== "string" || !isSafeStoredId(n.channelId))) {
+    return "a channel link must be a safe id";
+  }
   if (n.source !== "agent" && n.source !== "owner" && n.source !== "system") {
     return "a memory note says who wrote it";
   }

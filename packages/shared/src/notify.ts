@@ -20,6 +20,8 @@
    prefs migration.
 */
 
+import { channelNotificationModeFor, type ChannelNotificationMode } from "./chat-personalization.js";
+
 /** Preference fields that gate notifications. Same names as Settings. */
 export interface NotifyPrefs {
   /** Master switch. Off → nothing raises. Default in Settings is false. */
@@ -40,6 +42,8 @@ export interface NotifyPrefs {
    * is the whole rule; there is no second level and no per-kind matrix.
    */
   mutedChannelIds?: readonly string[];
+  /** Explicit per-room mode. Legacy mutedChannelIds remains supported. */
+  channelNotificationModes?: Readonly<Record<string, ChannelNotificationMode>>;
 }
 
 /** Defaults matching `cloud9.prefs` in Settings today. */
@@ -49,6 +53,7 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
   quietFrom: "22:00",
   quietTo: "08:00",
   mutedChannelIds: [],
+  channelNotificationModes: {},
 };
 
 /**
@@ -241,7 +246,8 @@ export function decideNotification(
      rather than behaviour. (He can still see the thread on his own terms: the
      room row says the new activity is inside a thread — see `unreadFor` on the
      desktop screen — so muting hides the interruption, never the news.) */
-  if (event.kind !== "mention" && isRoomMuted(prefs, event.channelId)) {
+  const roomMode = channelNotificationModeFor(prefs, event.channelId);
+  if (roomMode === "off" || (roomMode === "mentions" && event.kind !== "mention")) {
     return { raise: false, reason: "room_muted", key };
   }
   if (inQuietHours(prefs, now)) {

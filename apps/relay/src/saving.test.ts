@@ -129,7 +129,11 @@ test("one agent suggests, the owner says yes, and the OTHER agent really changes
   assert.equal(untouched.agent.useOwnerSetup, true, "a card waiting is not a change made");
 
   // HIS YES IS THE MOMENT IT CHANGES — one frame, one decision, one write.
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: card.revision ?? 0, approvalEpoch: card.approvalEpoch,
+    requestId: "saving-approve-1",
+  });
   const changed = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(
     f => f.type === "agent" && f.agent.id === scout.id && f.agent.useOwnerSetup === false);
   assert.equal(changed.agent.useOwnerSetup, false);
@@ -151,7 +155,12 @@ test("a no changes nothing at all, and says so", async () => {
   });
   const receipt = await engine.wait<Extract<ServerFrame, { type: "approvalAsked" }>>(
     f => f.type === "approvalAsked");
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "rejected" });
+  const card = (await waitApproval(owner, a => a.id === receipt.approvalId)).approval;
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "rejected",
+    expectedRevision: card.revision ?? 0, approvalEpoch: card.approvalEpoch,
+    requestId: "saving-reject-2",
+  });
   const decided = await waitApproval(owner, a => a.id === receipt.approvalId && a.status !== "pending");
   assert.equal(decided.approval.status, "rejected");
 
@@ -180,7 +189,11 @@ test("a monthly limit lands as a real ceiling, and keeps the per-job one he set"
   assert.match(card.action, /\$25\.00 a month/,
     "the amount he is agreeing to is IN the question — never just 'a limit'");
 
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: card.revision ?? 0, approvalEpoch: card.approvalEpoch,
+    requestId: "saving-approve-3",
+  });
   const changed = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(
     f => f.type === "agent" && f.agent.id === scout.id && !!f.agent.spendCap?.perMonthUsd);
   assert.deepEqual(changed.agent.spendCap, { perJobUsd: 3, perMonthUsd: 25 });

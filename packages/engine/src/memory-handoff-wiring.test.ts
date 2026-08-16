@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { AgentDef, ClientFrame, Message, WorldState } from "@cloud9/shared";
 import { Engine } from "./engine.js";
+import { engineActions } from "./hookwiring.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 import { MemoryStore, newMemoryId } from "./agent-memory.js";
 import { tempDir } from "./tmp-for-tests.js";
@@ -93,6 +94,90 @@ test("a turn is seeded from the agent's own saved notes", async () => {
   assert.match(seeded, /prices in GBP/, "the saved note was seeded into the turn");
 });
 
+test("a channel turn never seeds a different channel's scoped note", async () => {
+  const { engine, provider } = makeEngine();
+  engine.state!.channels.push({
+    id: "c2", name: "ops-2", kind: "channel", memberIds: [OWNER, "a1"], createdAt: 0,
+  });
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact",
+    text: "C1 private plan", channelId: "c1", createdAt: Date.now(), source: "owner",
+  });
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact",
+    text: "C2 private plan", channelId: "c2", createdAt: Date.now(), source: "owner",
+  });
+
+  await engine.takeTurn(agent(), "c2", { ...trigger, channelId: "c2" });
+
+  const seeded = provider.calls[0].memory ?? "";
+  assert.doesNotMatch(seeded, /C1 private plan/);
+  assert.match(seeded, /C2 private plan/);
+});
+
+test("a No retention DM still seeds global memory but never its scoped notes", async () => {
+  const { engine, provider } = makeEngine();
+  engine.state!.channels = [{
+    id: "dm-1", name: "direct", kind: "dm", memberIds: [OWNER, "a1"], createdAt: 0,
+  }];
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact",
+    text: "Vikas prefers concise weekly reports", createdAt: Date.now(), source: "owner",
+  });
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact", channelId: "dm-1",
+    text: "DM-only detail must not be seeded", createdAt: Date.now(), source: "owner",
+  });
+
+  await engine.takeTurn(agent(), "dm-1", { ...trigger, channelId: "dm-1" });
+
+  const seeded = provider.calls[0].memory ?? "";
+  assert.match(seeded, /concise weekly reports/);
+  assert.doesNotMatch(seeded, /DM-only detail/);
+});
+
+test("memory reports keep global notes in a No retention DM and filter scoped notes", () => {
+  const { engine, frames } = makeEngine();
+  engine.state!.channels = [{
+    id: "dm-1", name: "direct", kind: "dm", memberIds: [OWNER, "a1"], createdAt: 0,
+  }];
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact",
+    text: "global report note", createdAt: Date.now(), source: "owner",
+  });
+  engine.memory.save({
+    id: newMemoryId(), agentId: "a1", kind: "fact", channelId: "dm-1",
+    text: "private DM report note", createdAt: Date.now(), source: "owner",
+  });
+
+  engine.reportMemory("a1");
+
+  const report = frames.find((frame): frame is Extract<ClientFrame, { type: "memoryChanged" }> =>
+    frame.type === "memoryChanged");
+  assert.ok(report);
+  assert.deepEqual(report.notes.map(note => note.text), ["global report note"]);
+});
+
+test("channel-scoped memory refuses unknown and non-member channels before saving", async () => {
+  const { engine } = makeEngine();
+  engine.state!.channels.push({
+    id: "not-a-member", name: "closed", kind: "channel", memberIds: [OWNER], createdAt: 0,
+  });
+
+  const agentRefusal = await engine.rememberFromAgent(
+    "a1", "this must not land in an unknown room", "fact", "missing-channel");
+  assert.equal(agentRefusal.saved, false);
+  assert.equal(engine.saveOwnerMemoryNote("a1", "missing-channel", "owner note"), false);
+  assert.equal(engine.saveOwnerMemoryNote("a1", "not-a-member", "owner note"), false);
+  await engine.rememberFromRoom(agent(), "missing-channel", "room note");
+  assert.equal(engine.memory.list("a1").length, 0);
+
+  assert.throws(() => engineActions(engine).note({
+    agentId: "a1", channelId: "not-a-member", text: "hook note",
+  }), /policy refused/i);
+  assert.equal(engine.memory.list("a1").length, 0);
+});
+
 test("an agent with no memory is seeded with nothing, not an empty heading", async () => {
   const { engine, provider } = makeEngine();
   await engine.takeTurn(agent(), "c1", trigger);
@@ -109,6 +194,9 @@ test("a '!remember' note is written and survives the engine closing", async () =
     me: { id: OWNER, name: "Vikas" }, users: [{ id: OWNER, name: "Vikas" }],
     agents: [agent()], channels: [], messages: [], agentStatus: {}, tasks: [], approvals: [],
   } as unknown as WorldState;
+  engine.state.channels.push({
+    id: "c1", name: "ops", kind: "channel", memberIds: [OWNER, "a1"], createdAt: 0,
+  });
   const frames: ClientFrame[] = [];
   (engine as unknown as { ws: unknown }).ws = {
     readyState: 1, send: (raw: string) => frames.push(JSON.parse(raw) as ClientFrame),

@@ -29,15 +29,17 @@
 // What stays here is what only the engine can do: read a harness's stream
 // (`traceFromStream` + an `EventMapper`) and turn one turn into a record.
 import {
-  AgentTrust, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  AgentTrust, AgentInvocationReceipt, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  RunTestFact, testFactsFromSteps,
   SpendCapWhich,
 } from "@cloud9/shared";
 
 export {
-  RUN_LIMITS, countSteps, summarizeRun, humanDuration, humanMoney, shareableRun,
+  RUN_LIMITS, countSteps, summarizeRun, humanDuration, humanMoney, shareableRun, testFactsFromSteps,
   runListEntry, fitRunRecord, validateRunRecord, redactForSharing,
   type RunStepKind, type RunStep, type RunUsage, type RunRecord,
   type RunOutcome, type RunKind, type RunCounts, type RunListEntry,
+  type RunTestFact,
 } from "@cloud9/shared";
 
 /** What one provider's stream told us. The single shape both CLIs produce. */
@@ -245,6 +247,8 @@ export interface RunSeed {
   model?: string;
   channelId?: string;
   taskId?: string;
+  replyTo?: string;
+  invocation?: AgentInvocationReceipt;
   requestedBy: string;
   requestedByKind: "human" | "agent" | "schedule";
   ask: string;
@@ -293,6 +297,18 @@ export interface RunFinish {
   fellBackTo?: string;
   /** this run was the agent writing a plan, not doing the work */
   planOnly?: boolean;
+  /** Observable public checkpoint metadata, never provider internals. */
+  /** Explicit provider-reported tests, when a caller has them. */
+  tests?: RunTestFact[];
+  effort?: string;
+  branch?: string;
+  commit?: string;
+  files?: string[];
+  pullRequest?: string;
+  artifacts?: Array<{ id: string; name: string; version?: number; size?: number; available?: boolean }>;
+  checkpointId?: string;
+  priorRunId?: string;
+  invocation?: AgentInvocationReceipt;
 }
 
 /** A run id that is also a safe file name and sorts by time. No underscores: the
@@ -305,6 +321,7 @@ export function newRunId(now = Date.now(), rand = Math.random): string {
 
 export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()): RunRecord {
   const t = finish.trace;
+  const tests = finish.tests ?? testFactsFromSteps(t?.steps ?? []);
   return {
     id,
     kind: seed.kind,
@@ -314,6 +331,8 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(seed.model ? { model: seed.model } : {}),
     ...(seed.channelId ? { channelId: seed.channelId } : {}),
     ...(seed.taskId ? { taskId: seed.taskId } : {}),
+    ...(seed.replyTo ? { replyTo: seed.replyTo } : {}),
+    ...(seed.invocation ? { invocation: seed.invocation } : {}),
     requestedBy: seed.requestedBy,
     requestedByKind: seed.requestedByKind,
     ask: clip(seed.ask.trim(), RUN_LIMITS.ask),
@@ -323,6 +342,7 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     outcome: finish.outcome,
     ...(finish.error ? { error: clip(finish.error, RUN_LIMITS.error) } : {}),
     steps: t?.steps ?? [],
+    ...(tests.length > 0 ? { tests } : {}),
     ...(t?.usage ? { usage: t.usage } : {}),
     ...(t?.sessionId ? { sessionId: t.sessionId } : {}),
     // WHICH PATH THIS TURN TOOK. Present whenever the provider had an opinion,
@@ -342,6 +362,14 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(finish.capStop ? { capStop: finish.capStop } : {}),
     ...(finish.fellBackTo ? { fellBackTo: finish.fellBackTo } : {}),
     ...(finish.planOnly ? { planOnly: true } : {}),
+    ...(finish.effort ? { effort: finish.effort } : {}),
+    ...(finish.branch ? { branch: finish.branch } : {}),
+    ...(finish.commit ? { commit: finish.commit } : {}),
+    ...(finish.files ? { files: finish.files } : {}),
+    ...(finish.pullRequest ? { pullRequest: finish.pullRequest } : {}),
+    ...(finish.artifacts ? { artifacts: finish.artifacts } : {}),
+    ...(finish.checkpointId ? { checkpointId: finish.checkpointId } : {}),
+    ...(finish.priorRunId ? { priorRunId: finish.priorRunId } : {}),
     replyChars: finish.reply?.length ?? 0,
     events: t?.events ?? 0,
     ...(t?.truncated ? { truncated: true } : {}),

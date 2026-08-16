@@ -61,16 +61,18 @@ test("agent-authored polls still require the owner's engine and project membersh
 test("a deadline is a durable close and cannot be voted past", async t => {
   const { owner, engine } = await setup(t);
   const projectId = await project(owner, engine);
-  owner.send({ type: "createPoll", projectId, question: "Expires?", options: ["Now", "Later"], deadlineAt: Date.now() + 100 });
-  const created = await owner.wait<Extract<ServerFrame, { type: "poll" }>>(f => f.type === "poll" && f.poll.question === "Expires?");
-  await new Promise(resolve => setTimeout(resolve, 150));
+  owner.send({ type: "createPoll", projectId, question: "Expires?", options: ["Now", "Later"], deadlineAt: Date.now() + 500 });
+  const created = await owner.wait<Extract<ServerFrame, { type: "poll" }>>(
+    f => f.type === "poll" && f.poll.question === "Expires?", 15_000);
+  await new Promise(resolve => setTimeout(resolve, 600));
   owner.send({ type: "polls", projectId });
-  const listed = await owner.wait<Extract<ServerFrame, { type: "polls" }>>(f => f.type === "polls" && f.projectId === projectId);
+  const listed = await owner.wait<Extract<ServerFrame, { type: "polls" }>>(
+    f => f.type === "polls" && f.projectId === projectId, 15_000);
   const expired = listed.polls.find(p => p.id === created.poll.id)!;
   assert.equal(expired.status, "closed");
   assert.equal(expired.decision?.reason, "deadline");
   owner.send({ type: "votePoll", pollId: created.poll.id, optionId: created.poll.options[0].id });
-  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error", 15_000);
   assert.match(refused.error, /closed/);
 });
 

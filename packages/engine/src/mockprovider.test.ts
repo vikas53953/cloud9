@@ -25,12 +25,17 @@ test("ordinary demo answers remain immediate and visibly labelled", async () => 
 test("an explicit take-your-time demo turn stays stoppable through the provider boundary", async () => {
   const provider = new MockProvider();
   const abortController = new AbortController();
-  const pending = provider.respond(ask("take your time comparing every villa", abortController));
+  const steps: unknown[] = [];
+  const pending = provider.respond({
+    ...ask("take your time comparing every villa", abortController),
+    onStep: next => steps.push(...next),
+  });
   const early = await Promise.race([
     pending.then(() => "answered", () => "stopped"),
     new Promise<string>(resolve => setTimeout(() => resolve("waiting"), 25)),
   ]);
   assert.equal(early, "waiting", "the deliberate QA turn must still be alive when Stop appears");
+  assert.deepEqual(steps, [{ seq: 1, kind: "note", label: "Demo work is in progress" }]);
   abortController.abort();
   await assert.rejects(pending, /owner stopped this demo turn/i);
 });

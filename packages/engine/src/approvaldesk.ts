@@ -43,6 +43,9 @@ export interface ApprovalOutcome {
   approved: boolean;
   reason: string;
   approvalId?: ID;
+  /** Exact instructions that were approved, when a checkpoint was revised. */
+  instructions?: string;
+  revision?: number;
   /**
    * TRUE when this went ahead WITHOUT a card, because the owner had already
    * answered in advance with this agent's trust setting.
@@ -488,7 +491,11 @@ export class ApprovalDesk {
     const w = this.waiting.find(x => x.approvalId === approval.id);
     if (!w || approval.status === "pending") return false;
     if (approval.status === "approved") {
-      this.finish(w.askId, { approved: true, reason: "approved", approvalId: approval.id });
+      this.finish(w.askId, {
+        approved: true, reason: "approved", approvalId: approval.id,
+        ...(approval.instructions ? { instructions: approval.instructions } : {}),
+        ...(approval.revision !== undefined ? { revision: approval.revision } : {}),
+      });
       return true;
     }
     this.finish(w.askId, {

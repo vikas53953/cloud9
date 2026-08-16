@@ -112,10 +112,47 @@ test("a finished turn reaches the hub, the room and the activity trail", async (
   owner.close(); engine.close(); relay.close();
 });
 
+test("a run receipt keeps public execution facts and omits provider-absent cost", async () => {
+  const { relay, owner, engine } = await stand("runs-receipt.db");
+  try {
+    const agent = await makeAgent(owner, "Scout");
+    const channel = relay.store.channels()[0];
+    engine.send({
+      type: "runRecorded",
+      record: record({
+        id: "r-000000011-0001", agentId: agent.id, channelId: channel.id,
+        model: "gpt-5.6-sol", effort: "high", branch: "cloud9/scout-1",
+        commit: "abc123", files: ["src/app.ts"],
+        tests: [{ command: "npm test", ok: true }],
+        pullRequest: "https://github.com/example/cloud9/pull/1",
+        artifacts: [{ id: "artifact-1", name: "report.md", available: true }],
+        usage: undefined,
+        invocation: {
+          agentId: agent.id, permissionScope: "readOnly", trust: "askEveryTime",
+          abilities: { webSearch: false, files: false, schedules: false, background: false },
+        },
+      }),
+    });
+    const pushed = await owner.wait<Extract<ServerFrame, { type: "run" }>>(
+      f => f.type === "run" && f.record.id === "r-000000011-0001");
+    assert.equal(pushed.record.branch, "cloud9/scout-1");
+    assert.equal(pushed.record.commit, "abc123");
+    assert.deepEqual(pushed.record.files, ["src/app.ts"]);
+    assert.deepEqual(pushed.record.tests, [{ command: "npm test", ok: true }]);
+    assert.equal(pushed.record.usage?.costUsd, undefined, "Codex did not report money");
+    assert.equal(pushed.record.invocation?.permissionScope, "readOnly");
+  } finally {
+    owner.close(); engine.close(); relay.close();
+  }
+});
+
 test("a delegated job learns which run actually did it", async () => {
   const { relay, url, owner, engine, me } = await stand("runs-task.db");
   const agent = await makeAgent(owner, "Scout");
   const channel = relay.store.channels()[0];
+  owner.send({ type: "addMembers", channelId: channel.id, memberIds: [agent.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channel.id && f.channel.memberIds.includes(agent.id));
 
   engine.send({
     type: "createTask", agentId: agent.id, channelId: channel.id,
@@ -327,6 +364,10 @@ test("a run cannot attach itself to another agent's job", async () => {
   const scout = await makeAgent(owner, "Scout");
   const wanda = await makeAgent(owner, "Wanda");
   const channel = relay.store.channels()[0];
+  owner.send({ type: "addMembers", channelId: channel.id, memberIds: [scout.id, wanda.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channel.id
+      && f.channel.memberIds.includes(scout.id) && f.channel.memberIds.includes(wanda.id));
 
   engine.send({
     type: "createTask", agentId: wanda.id, channelId: channel.id,

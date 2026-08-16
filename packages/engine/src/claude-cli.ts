@@ -20,6 +20,7 @@ import {
 } from "@cloud9/shared";
 import {
   ClaudeProvider, HarnessUnavailableError, TurnOutputTooBigError, RespondInput, splitAgentPrompt,
+  REVIEW_READ_ONLY_TOOLS,
 } from "./provider.js";
 import {
   CLAUDE_BUILTIN_TOOLS, claudeToolsFor, deniedClaudeTools, grantedSupply, Supply,
@@ -30,7 +31,10 @@ import { EMPTY_ARG, NO_TIME_LIMIT, Runner, run, safeArg } from "./run.js";
 import { envWithoutCredentials } from "./env.js";
 // ONE OWNER for "isolated, or the owner's own setup" — read by this file and by
 // codex.ts, so the two harnesses can never drift apart on the question.
-import { claudeSetupEnv, claudeSetupFlags, usesOwnerSetup } from "./ownersetup.js";
+import {
+  CLAUDE_ISOLATION_ENV, CLAUDE_ISOLATION_FLAGS,
+  claudeSetupEnv, claudeSetupFlags, usesOwnerSetup,
+} from "./ownersetup.js";
 import {
   baseName, EventMapper, ProviderTrace, RunStepKind, RunUsage, traceFromStream,
 } from "./runrecord.js";
@@ -561,6 +565,8 @@ export interface ClaudeArgExtras {
    * cannot reach further in plan mode than it can in an ordinary turn.
    */
   planOnly?: boolean;
+  /** Narrow this ordinary turn to review-safe read-only tools. */
+  reviewOnly?: boolean;
 }
 
 /**
@@ -572,8 +578,9 @@ export interface ClaudeArgExtras {
  * month is therefore absent from a plan turn until somebody deliberately puts
  * it on this list, which is the fail-closed direction.
  */
-export const CLAUDE_PLAN_TOOLS: readonly string[] =
-  ["Read", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
+export const CLAUDE_PLAN_TOOLS: readonly string[] = [
+  ...REVIEW_READ_ONLY_TOOLS, "WebSearch", "WebFetch",
+];
 
 /**
  * Is this an amount we are willing to put on a command line as a ceiling?
@@ -630,7 +637,10 @@ export function claudeArgs(
   // when he has switched this agent to his own Claude Code setup, which is the
   // whole of the change: no flag is bent, the isolation is simply not applied.
   // The Codex path asks the SAME file the same question about the same agent.
-  args.push(...claudeSetupFlags(agent));
+  // A review is a hard security boundary, not an agent preference. It cannot
+  // inherit owner settings, slash commands, hooks, or MCP servers even when
+  // the stored agent has explicitly opted into the owner's setup.
+  args.push(...(extras.reviewOnly ? CLAUDE_ISOLATION_FLAGS : claudeSetupFlags(agent)));
   // ---------------------------------------------------------------------------
   if (agent.model) {
     if (!MODEL_ID_RE.test(agent.model)) throw new Error("refusing to run this agent: bad model id");
@@ -715,16 +725,19 @@ export function claudeArgs(
   // WHAT IS TRULY GRANTED, from the same function the prompt asks. A flag on
   // this line and a sentence in the prompt can no longer disagree, because
   // neither of them decides on its own — see `grantedSupply` in abilities.ts.
-  const granted = grantedSupply(agent, extras);
+  const granted = grantedSupply(agent, extras.reviewOnly
+    ? { ...extras, wholeComputerRoots: [], mcpConfigPath: undefined }
+    : extras);
   // Cloud9's own tools ride alongside the harness's built-ins. They are only in
   // the list when the doorway is really open for this turn.
-  const cloud9 = extras.cloud9McpConfigPath ? cloud9ToolNames() : [];
+  const cloud9 = extras.reviewOnly ? [] : (extras.cloud9McpConfigPath ? cloud9ToolNames() : []);
   // A PLAN TURN KEEPS ONLY THE READING HALF of what this agent already has.
   // An INTERSECTION, so it can only ever be smaller — see `CLAUDE_PLAN_TOOLS`.
   // Cloud9's own doorway rides along either way: reading the room you are
   // standing in is what makes a plan worth reading.
-  const built = extras.planOnly
-    ? claudeToolsFor(agent).filter(t => CLAUDE_PLAN_TOOLS.includes(t))
+  const readOnly = extras.reviewOnly ? REVIEW_READ_ONLY_TOOLS : CLAUDE_PLAN_TOOLS;
+  const built = extras.planOnly || extras.reviewOnly
+    ? claudeToolsFor(agent).filter(t => readOnly.includes(t))
     : claudeToolsFor(agent);
   const allowed = [...built, ...cloud9];
   // `--tools` DECLARES which built-in tools exist for this run. `--allowed-tools`
@@ -744,7 +757,7 @@ export function claudeArgs(
   // On a plan turn this covers the writing tools the agent normally HAS, so the
   // narrowing above is stated twice on the line rather than only implied by
   // what is missing from it. Derived from `built`, so the two can never differ.
-  const denied = extras.planOnly
+  const denied = extras.planOnly || extras.reviewOnly
     ? CLAUDE_BUILTIN_TOOLS.filter(t => !built.includes(t))
     : deniedClaudeTools(agent);
   if (denied.length > 0) args.push("--disallowed-tools", ...denied.map(safeArg));
@@ -756,15 +769,17 @@ export function claudeArgs(
   // file learned that lesson the expensive way on the Codex side, where quoting
   // a path here as well made `run()` reject its own quotes and broke every turn
   // for anyone with a space in their user folder.
-  for (const root of granted.wholeComputerRoots ?? []) args.push("--add-dir", root);
+  if (!extras.reviewOnly) {
+    for (const root of granted.wholeComputerRoots ?? []) args.push("--add-dir", root);
+  }
   // Connected services the owner chose for THIS agent. `--strict-mcp-config` is
   // already on the line above and stays there, so this config is the only one
   // that can exist for the run — his own servers cannot arrive through it.
-  if (granted.mcpConfigPath) args.push("--mcp-config", granted.mcpConfigPath);
+  if (!extras.reviewOnly && granted.mcpConfigPath) args.push("--mcp-config", granted.mcpConfigPath);
   // Cloud9's own doorway. Ungated, because reading the room you are standing in
   // is not a new power — every agent, on every rung, is already handed the
   // recent messages of this conversation.
-  if (extras.cloud9McpConfigPath) args.push("--mcp-config", extras.cloud9McpConfigPath);
+  if (!extras.reviewOnly && extras.cloud9McpConfigPath) args.push("--mcp-config", extras.cloud9McpConfigPath);
   return args;
 }
 
@@ -774,7 +789,9 @@ export function claudeArgs(
  * directions rather than trusting that they were written from the same variable.
  */
 export function claudeSupply(agent: AgentDef, extras: ClaudeArgExtras = {}): Supply {
-  return grantedSupply(agent, extras);
+  return grantedSupply(agent, extras.reviewOnly
+    ? { ...extras, wholeComputerRoots: [], mcpConfigPath: undefined }
+    : extras);
 }
 
 /**
@@ -826,6 +843,10 @@ export class ClaudeCliProvider implements ClaudeProvider {
     this.command = opts.command ?? "claude";
   }
 
+  // Claude CLI's stream-json exposes snapshots/tool events here, not a
+  // provider-proven incremental answer delta. Keep this path final-only.
+  canStreamResponse(): boolean { return false; }
+
   /**
    * MAY THIS TURN CONTINUE THE SESSION IT ALREADY HAS? (`sessionresume.ts`)
    *
@@ -850,7 +871,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
     // continue (see `rememberSession`): the plan turn ran read-only with half
     // the tools, so a later turn resuming it would inherit a session whose
     // abilities are not this agent's. It runs cold and is forgotten.
-    if (input.planOnly) return undefined;
+    if (input.planOnly || input.reviewOnly) return undefined;
     // NOT REPOSITORY WORK. A `!code` job stands in its own git worktree, made
     // fresh for the job, so there is nothing to continue — and the folder guard
     // below would refuse it anyway. Saying so here keeps the reason readable.
@@ -890,7 +911,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
     const book = this.opts.sessions;
     if (!book || !input.thread || !sessionId) return;
     // the other half of the plan-turn rule above — see `planResume`
-    if (input.planOnly) return;
+    if (input.planOnly || input.reviewOnly) return;
     try {
       book.remember(input.agent.id, {
         key,
@@ -912,6 +933,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
    * that says what it does and what it must be paired with).
    */
   canPlan(): boolean { return true; }
+  supportsEffort(): boolean { return true; }
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;
@@ -920,16 +942,19 @@ export class ClaudeCliProvider implements ClaudeProvider {
     // happen anywhere but the agent's folder.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
     // THE DOORWAY, opened for this turn only and shut in the `finally` below.
-    const doorway = input.channelId
+    const doorway = input.channelId && !input.reviewOnly
       // GAP A (2026-08-05): `agentId` added so the memory doorway binds to THIS agent.
       ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
       : undefined;
     const cloud9McpConfigPath = doorway
       ? this.writeCloud9Config(agent.id, doorway) : undefined;
     const extras: ClaudeArgExtras = {
-      wholeComputerRoots: this.opts.wholeComputerRoots?.(agent.id) ?? [],
-      mcpConfigPath: this.opts.mcpConfigPath?.(agent.id),
-      ...(cloud9McpConfigPath ? { cloud9McpConfigPath } : {}),
+      // Review is intentionally independent of the stored agent's owner
+      // grants. Do not even ask the callbacks for roots/config paths: callers
+      // may implement them by loading credentials or creating remote clients.
+      wholeComputerRoots: input.reviewOnly ? [] : (this.opts.wholeComputerRoots?.(agent.id) ?? []),
+      ...(input.reviewOnly ? {} : { mcpConfigPath: this.opts.mcpConfigPath?.(agent.id) }),
+      ...(!input.reviewOnly && cloud9McpConfigPath ? { cloud9McpConfigPath } : {}),
       // HOW HARD IT SHOULD THINK, translated by the ONE owner of that table
       // (@cloud9/shared, effort.ts) rather than by a mapping written here.
       // Undefined for an agent that has never been given a choice, and the flag
@@ -942,6 +967,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
       // line and has no opinion about when they apply.
       ...(typeof input.maxBudgetUsd === "number" ? { maxBudgetUsd: input.maxBudgetUsd } : {}),
       ...(input.planOnly ? { planOnly: true } : {}),
+      ...(input.reviewOnly ? { reviewOnly: true } : {}),
     };
     // ==================================================================
     // THE STANDING BRIEF, WRITTEN ONCE, BEFORE ANYTHING ELSE (gap A).
@@ -1016,7 +1042,8 @@ export class ClaudeCliProvider implements ClaudeProvider {
         // The isolation environment rides alongside — it is the part of the
         // boundary the CLI has no flag for, and it is EMPTY when this agent runs
         // in his setup, so his auto-memory folder loads with everything else.
-        env: envWithoutCredentials(process.env, { ...claudeSetupEnv(agent) }),
+        env: envWithoutCredentials(process.env,
+          input.reviewOnly ? CLAUDE_ISOLATION_ENV : claudeSetupEnv(agent)),
         // THE LIVE VIEW. `claude -p --output-format stream-json` already prints
         // one JSON line per tool call and per result; this feeds each line to
         // the SAME `claudeMapper` the record is built from, as it arrives.

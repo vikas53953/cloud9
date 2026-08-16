@@ -12,6 +12,8 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
+  AgentInvocationRequest, canonicalizeAgentInvocation, invocationTargetFor, validateAgentInvocation,
+  isChannelMemoryMode,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, PublicUpdateLink,
   validatePublicUpdateText, validatePublicUpdateLinks,
@@ -23,19 +25,31 @@ import {
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
   redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
-  RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
+  RunRecord, RUN_RETENTION, APPROVAL_LIMITS, APPROVAL_CHECKPOINT_LIMITS,
+  tidyApprovalText, validateApprovalInstructions,
+  validateApprovalQuestion, validateApprovalCheckpointRequestId,
+  ThreadSummaryRequest, ThreadSummaryResult, THREAD_SUMMARY_LIMITS,
+  RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryDecision,
+  compareRecoveryRequest, compareRuns, recoveryRequestFingerprint,
+  buildRunCheckpoint, sanitizeRecoveryAsk,
   // "show me the plan first" (2026-08-05) — the hub still writes the line the
   // owner reads and still bounds what the agent wrote
   planHeadline, tidyPlan, validatePlanAsk,
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
-  SearchHit, SavedMessageEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  SearchHit, SavedMessageEntry, ChannelPinEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  RichLinkPreview, RichLinkRef, RICH_LINK_LIMITS,
+  MessageStatus,
+  ChatDraft, DraftAttachment, DraftAttachmentState, DRAFT_LIMITS,
+  HumanTyping,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
   SocialLink, SocialPost, SOCIAL_LIMITS, validateSocialText,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
   RUN_LIMITS, redactForSharing, validateLiveSteps,
+  RESPONSE_STREAM_LIMITS, validateAgentResponseStream,
+  type AgentResponseStreamEvent,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
   isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
   normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
@@ -46,6 +60,7 @@ import {
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateSocialLinks,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
+  validateThreadSummaryRequest, validateThreadSummaryResult,
   HuddleSession, HuddleNote, HuddleParticipant, HuddleLink, HuddleNoteKind, validateHuddleText, validateHuddleLinks,
   ForumTopic, ForumReply, ForumLink, ForumStatus,
   validateForumText, validateForumTags, validateForumLinks,
@@ -78,6 +93,23 @@ import {
   revokeJoinToken as retireJoinToken, JOIN_TOKEN_TTL_MS,
 } from "./joinhub.js";
 
+function stableApprovalCheckpointHash(frame: ClientFrame): string {
+  const canonical = (value: unknown, key?: string): unknown => {
+    if (key === "requestId") return undefined;
+    if (Array.isArray(value)) return value.map(item => canonical(item));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([name]) => name !== "requestId")
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, item]) => [name, canonical(item, name)]),
+      );
+    }
+    return value;
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(frame))).digest("hex");
+}
+
 /**
  * WHAT ONE DOWNLOAD TICKET IS FOR.
  *
@@ -95,6 +127,51 @@ interface Conn {
   userId: ID;
   client: "desktop" | "mobile" | "engine";
 }
+
+interface RecoveryChallenge {
+  token: string;
+  requesterId: ID;
+  requestId: ID;
+  payloadFingerprint: string;
+  createdAt: number;
+}
+
+const RECOVERY_CHALLENGE_TTL_MS = 10 * 60_000;
+const RECOVERY_CHALLENGE_LIMIT = 512;
+
+interface LiveTyping extends HumanTyping {
+  expiresAt: number;
+  /** Last time this signal was broadcast, used to debounce noisy clients. */
+  lastBroadcastAt: number;
+  /** One account may type in the same room from more than one live window. */
+  sources: Set<WebSocket>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+interface ActiveResponseStream {
+  /** The engine socket that started this turn; a second host must not keep it alive. */
+  source: WebSocket;
+  ownerId: ID;
+  channelId: ID;
+  triggerMessageId: ID;
+  agentId: ID;
+  turnId: string;
+  lastSeq: number;
+  /** Sequence ids already projected; frames may arrive out of order. */
+  seenSeq: Set<number>;
+  totalChars: number;
+  eventTimes: number[];
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const responseStreamKey = (ownerId: ID, channelId: ID, triggerMessageId: ID, agentId: ID, turnId: string): string =>
+  `${ownerId}\u0000${channelId}\u0000${triggerMessageId}\u0000${agentId}\u0000${turnId}`;
+const responseStreamSlot = (ownerId: ID, channelId: ID, triggerMessageId: ID, agentId: ID): string =>
+  `${ownerId}\u0000${channelId}\u0000${triggerMessageId}\u0000${agentId}`;
+
+/** Human typing is deliberately short-lived and in-memory only. */
+const HUMAN_TYPING_TTL_MS = 4_000;
+const HUMAN_TYPING_DEBOUNCE_MS = 250;
 
 /** Reminder dates are metadata only: no scheduler or notification exists in v1. */
 const SAVED_REMINDER_HORIZON_MS = 5 * 365 * 24 * 60 * 60 * 1000;
@@ -239,6 +316,8 @@ export class Relay {
   // his screen, live, until he answers it or stops the agent.)
   /** Startup-expired workflow approvals are re-broadcast once the owner arrives. */
   private restartExpiredWorkflowApprovals: Approval[] = [];
+  /** Recovery approvals cannot survive only in a Map: settle them durably on restart. */
+  private restartSettledRecoveryApprovals: Approval[] = [];
   /** One persisted poll deadline is enough to wake the relay; the next one is rescheduled after each sweep. */
   private pollExpiryTimer?: ReturnType<typeof setTimeout>;
   /** last sign-in request per user, and whether one is still running */
@@ -254,8 +333,28 @@ export class Relay {
    * with the clock, and with their first use — whichever comes first.
    */
   private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
+  /** Short-lived server-minted recovery capabilities; never durable or client-chosen. */
+  private recoveryChallenges = new Map<string, RecoveryChallenge>();
+  /** Recovery requests held by the existing approval desk until owner approval. */
+  private pendingRecovery = new Map<string, RecoveryRequest>();
+  /** Live human typing by account/channel. Never written to SQLite or history. */
+  private liveTyping = new Map<string, LiveTyping>();
   /** Agent ids currently represented by each engine socket for huddle presence cleanup. */
   private huddleEngineAgents = new Map<WebSocket, Set<ID>>();
+  /** Genuine response previews; process memory only and swept on inactivity. */
+  private responseStreams = new Map<string, ActiveResponseStream>();
+  private responseStreamSlots = new Map<string, string>();
+  /**
+   * Recently ended turn keys. A terminal/source-close frame must not free the
+   * same public turn id for another engine socket to resurrect immediately.
+   * These are process-local, bounded, and expire with the same lease as a live
+   * preview; they are not history or durable response content.
+   */
+  private responseStreamTombstones = new Map<string, number>();
+  /** Explicit summary requests/results, bounded and process-local. */
+  private threadSummaryResults = new Map<string, ThreadSummaryResult>();
+  private threadSummaryPending = new Map<string, ThreadSummaryRequest>();
+  private closing = false;
 
   /**
    * The receipt for the one-time catch-up, when this start is the one that ran
@@ -286,6 +385,7 @@ export class Relay {
     this.ownerId = owner.id;
     const interrupted = this.store.interruptActiveWorkflowRuns(this.ownerId);
     this.restartExpiredWorkflowApprovals = this.store.takeInterruptedWorkflowApprovals();
+    this.restartSettledRecoveryApprovals = this.settleInterruptedRecoveryApprovals();
     if (interrupted.length) {
       console.warn(`[cloud9] marked ${interrupted.length} workflow run(s) interrupted after restart`);
     }
@@ -335,6 +435,7 @@ export class Relay {
     // uploader's, so nothing was ever going to reclaim them. Swept at every
     // start, and again on each upload, so the disk cannot fill with drafts.
     this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
+    this.store.sweepChatDrafts(Date.now());
     // Poll deadlines survive a relay restart in SQLite. Schedule the earliest
     // one now so closure is pushed to every currently connected window rather
     // than waiting for somebody to request the poll list.
@@ -394,18 +495,28 @@ export class Relay {
   }
 
   close(): void {
+    this.closing = true;
     if (this.pollExpiryTimer) clearTimeout(this.pollExpiryTimer);
     this.pollExpiryTimer = undefined;
+    for (const state of [...this.liveTyping.values()]) this.removeLiveTyping(state.channelId, state.userId, false);
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
+    this.clearResponseStreams();
+    // No engine or requester can receive a late answer after shutdown. Drop
+    // both ledgers before closing sockets so a restarted relay cannot accept a
+    // stale provider result for an old request.
+    this.threadSummaryPending.clear();
+    this.threadSummaryResults.clear();
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
+    this.store.close();
   }
 
   private onConnection(ws: WebSocket): void {
     let conn: Conn | undefined;
     ws.on("message", raw => {
+      if (this.closing) return;
       let parsed: unknown;
       try { parsed = JSON.parse(String(raw)); } catch { return; }
       // JSON.parse returning a value does not make it a frame. Validate the
@@ -446,9 +557,26 @@ export class Relay {
       }
     });
     ws.on("close", () => {
+      if (this.closing) { if (conn) this.conns.delete(conn); return; }
       if (!conn) return;
       const closed = conn;
       this.conns.delete(conn);
+      // Summary requests belong to the requester identity, not to one
+      // particular desktop socket.  A mobile client is just as authoritative
+      // a requester as the desktop renderer; settle only after the person's
+      // last accepted human client has gone away.  (Engine sockets have their
+      // own lifecycle below and must not count as requester presence.)
+      const stillHasRequesterClient = [...this.conns].some(c =>
+        c.userId === closed.userId && c.client !== "engine");
+      if (!stillHasRequesterClient && closed.client !== "engine") {
+        this.settleThreadSummaries(request => request.requesterId === closed.userId,
+          "unavailable", "the requester disconnected before the summary was ready");
+      }
+      const stillHasDesktop = [...this.conns].some(c => c.userId === closed.userId && c.client === "desktop");
+      // A person may have the same room open on another desktop or mobile
+      // client. Remove only this socket's signal; the shared row ends once its
+      // final live source leaves.
+      this.clearTypingForConnection(closed.ws);
       // A dropped socket is a leave, not a still-present participant. Persist
       // it and tell only the remaining authorized audience.
       const stillConnected = [...this.conns].some(c => c.userId === closed.userId && c.client === "desktop");
@@ -475,19 +603,30 @@ export class Relay {
       }
       // The engine host owns the CLIs. Once it's gone, its last status report is
       // a stale claim about a machine nobody is watching — drop it and say so.
-      if (conn.client === "engine" && !this.hasEngine(conn.userId)) {
-        delete this.harness[conn.userId];
-        delete this.signInFlight[conn.userId];
+      if (closed.client === "engine") {
+        // Each preview is bound to the socket that started it. A second engine
+        // for the same owner is a separate host, not permission to continue a
+        // turn whose source process has disappeared.
+        this.clearResponseStreams(stream => stream.source === closed.ws);
+        if (!this.hasEngine(closed.userId)) {
+          this.settleThreadSummaries(request => this.store.agents()
+            .some(agent => agent.id === request.agentId && agent.ownerId === closed.userId),
+          "unavailable", "the agent engine disconnected before the summary was ready");
+        }
+      }
+      if (closed.client === "engine" && !this.hasEngine(closed.userId)) {
+        delete this.harness[closed.userId];
+        delete this.signInFlight[closed.userId];
         // THE SAME REASONING, APPLIED TO THE LAMP. The last idle/working/braked
         // an engine reported is a claim about a machine nobody is watching any
         // more, and keeping it meant an engine that died mid-turn left its agent
         // "working" for ever. Dropped, and everyone is told what is true now:
         // nobody can run these agents.
         for (const agent of this.store.agents()) {
-          if (agent.ownerId === conn.userId) delete this.agentStatus[agent.id];
+          if (agent.ownerId === closed.userId) delete this.agentStatus[agent.id];
         }
-        this.announcePresenceForOwner(conn.userId);
-        this.toUser(conn.userId, {
+        this.announcePresenceForOwner(closed.userId);
+        this.toUser(closed.userId, {
           type: "harness",
           state: {
             claude: {
@@ -544,11 +683,16 @@ export class Relay {
     if (!user) { sendFrameError(ws, "bad token", frame); ws.close(); return undefined; }
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
-    send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    send(ws, { type: "welcome", state: this.worldFor(user.id, conn.client) });
     if (conn.userId === this.ownerId && this.restartExpiredWorkflowApprovals.length) {
       const expired = this.restartExpiredWorkflowApprovals;
       this.restartExpiredWorkflowApprovals = [];
       for (const approval of expired) this.sendApproval(approval);
+    }
+    if (conn.userId === this.ownerId && this.restartSettledRecoveryApprovals.length) {
+      const settled = this.restartSettledRecoveryApprovals;
+      this.restartSettledRecoveryApprovals = [];
+      for (const approval of settled) this.sendApproval(approval);
     }
     if (conn.client === "engine") this.syncHooksToEngine(user.id);
     // An engine arriving changes the answer for every agent it can run, and
@@ -606,7 +750,7 @@ export class Relay {
       this.broadcastChannel(this.store.channel(general.id)!);
     }
     this.broadcast({ type: "userJoined", user });
-    send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    send(ws, { type: "welcome", state: this.worldFor(user.id, conn.client) });
     return conn;
   }
 
@@ -676,7 +820,7 @@ export class Relay {
     this.announcePresence(this.store.agents().filter(a => a.ownerId === userId));
   }
 
-  private worldFor(userId: ID): WorldState {
+  private worldFor(userId: ID, client: Conn["client"] = "desktop"): WorldState {
     const users = this.store.users();
     const channels = this.visibleChannels(userId);
     return {
@@ -684,6 +828,7 @@ export class Relay {
       users,
       agents: this.store.agents(),
       channels,
+      channelMemoryPolicies: this.store.channelMemoryPoliciesFor(userId),
       // only the conversations this person is actually in (P1 #7). The opening
       // frame used to carry the backlog of EVERY channel in the database.
       messages: this.hydrate(this.store.recentMessages(channels)),
@@ -692,11 +837,11 @@ export class Relay {
       // including the ones nobody has ever reported a lamp for, which used to
       // be every agent on a hub that had just started.
       presence: this.presenceMap(),
-      tasks: this.store.tasks().filter(task => {
-        if (!task.workflowRunId) return true;
-        const agent = this.store.agents().find(a => a.id === task.agentId);
-        return agent?.ownerId === userId || this.visibleChannels(userId).some(channel => channel.id === task.channelId);
-      }),
+      // Tasks are private work records. Workflow tasks have had a narrower
+      // projection for a long time; ordinary handoffs must use the same
+      // owner/requester/current-room gate rather than leaking the whole tray
+      // in the welcome snapshot.
+      tasks: this.store.tasks().filter(task => this.canSeeTask(userId, task)),
       ...(userId === this.ownerId
         ? {
             workflows: this.store.workflows(userId),
@@ -717,6 +862,10 @@ export class Relay {
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
+      // Engines are not human windows/readers.  Keep the author delivery
+      // projection out of their bootstrap state; desktop/mobile windows get
+      // the author-only projection and subsequent status pushes.
+      messageStatuses: client === "engine" ? [] : this.messageStatusesFor(userId),
       // WHAT THE HUB CHANGED ABOUT HIS AGENTS BEFORE HE ARRIVED, to the person
       // whose agents they are and to nobody else. A guest is not shown a list of
       // somebody else's crew, and it is absent entirely when nothing happened.
@@ -1421,6 +1570,25 @@ export class Relay {
     return createHash("sha256").update(JSON.stringify(stable(frame))).digest("hex");
   }
 
+  private taskPayloadHash(frame: Extract<ClientFrame, { type: "createTask" }>): string {
+    return createHash("sha256").update(JSON.stringify([
+      frame.agentId, frame.channelId, frame.title, frame.requesterId ?? null,
+      frame.sourceMessageId ?? null, frame.sourceThreadId ?? null,
+      frame.deadlineAt ?? null,
+      frame.causedByHook === true,
+    ])).digest("hex");
+  }
+
+  /** Request ids are durable lookup keys, not an unbounded text field. */
+  private taskRequestId(value: unknown): ID | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || value.length === 0 || value.length > 64
+      || value.trim() !== value || !isSafeStoredId(value)) {
+      throw new Error("that task request id is not usable");
+    }
+    return value;
+  }
+
   private priorSocialOperation<T extends ServerFrame>(conn: Conn, kind: string, requestId?: ID, payloadHash?: string, projectId?: ID): T | undefined {
     if (!requestId) return undefined;
     const prior = this.store.socialOperation(conn.userId, requestId, kind);
@@ -1574,6 +1742,93 @@ export class Relay {
     const agent = this.store.agents().find(candidate => candidate.id === task.agentId);
     if (agent?.ownerId === userId) return true;
     try { this.channelFor(userId, task.channelId); return true; } catch { return false; }
+  }
+
+  /**
+   * Resolve message-text links through the same gates as their full viewers.
+   * Missing or inaccessible targets are omitted, never represented as an
+   * ``available: false`` row that could reveal whether a guessed id exists.
+   */
+  private richLinkPreviewsFor(userId: ID, refs: RichLinkRef[]): RichLinkPreview[] {
+    const out: RichLinkPreview[] = [];
+    const seen = new Set<string>();
+    const add = (preview: RichLinkPreview): void => {
+      const key = preview.ref.kind === "projectItem"
+        ? `${preview.ref.kind}:${preview.ref.projectId}:${preview.ref.itemKind}:${preview.ref.number}`
+        : `${preview.ref.kind}:${preview.ref.id}${preview.ref.version === undefined ? "" : `@${preview.ref.version}`}`;
+      const source = preview.sourceUrl ? `:${preview.sourceUrl}` : "";
+      if (seen.has(key + source)) return;
+      seen.add(key + source); out.push(preview);
+    };
+    for (const ref of refs) {
+      if (!ref || typeof ref !== "object" || typeof ref.kind !== "string") continue;
+      if (ref.kind === "task") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const task = this.store.task(ref.id);
+        if (!task || !this.canSeeTask(userId, task)) continue;
+        add({ ref, channelId: task.channelId, ownerId: task.agentId, title: task.title, status: task.status, ...(task.requesterName ? { owner: task.requesterName } : {}) });
+        continue;
+      }
+      if (ref.kind === "run") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const row = this.store.run(ref.id);
+        if (!row || !this.canSeeRun(userId, row)) continue;
+        const record = row.record;
+        add({ ref, channelId: record.channelId, ownerId: record.agentId, title: record.ask, status: record.outcome, ...(record.requestedBy ? { owner: record.requestedBy } : {}) });
+        continue;
+      }
+      if (ref.kind === "artifact") {
+        if (!isSafeStoredId(ref.id)) continue;
+        let artifact: StoredArtifact;
+        try { artifact = this.artifactFor(userId, ref.id); } catch { continue; }
+        const version = ref.version === undefined ? latestVersion(artifact) : artifact.versions.find(v => v.version === ref.version);
+        if (!version) continue;
+        add({ ref, channelId: artifact.channelId, ownerId: version.agentId, title: artifact.name, ...(version.agentName ? { owner: version.agentName } : {}) });
+        continue;
+      }
+      if (ref.kind === "decision") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const topic = this.store.forumTopicFor(userId, ref.id);
+        if (!topic || topic.deletedAt) continue;
+        try { this.forumProject(userId, topic.projectId); } catch { continue; }
+        let channelId: ID | undefined;
+        try { channelId = this.store.project(topic.projectId)?.channelId; } catch { /* absent project metadata is not disclosure */ }
+        add({ ref, channelId, ownerId: topic.authorId, title: topic.title, status: topic.status, ...(topic.authorName ? { owner: topic.authorName } : {}) });
+        continue;
+      }
+      if (ref.kind === "projectItem") {
+        if (!isSafeStoredId(ref.projectId) || (ref.itemKind !== "pull" && ref.itemKind !== "issue")
+          || !Number.isSafeInteger(ref.number) || ref.number < 1) continue;
+        let project: Project;
+        // Project item snapshots are an owner-only GitHub projection today;
+        // do not widen the existing `projectItems` contract just because a
+        // message contains a matching URL.
+        try { project = this.myProject(userId, ref.projectId); } catch { continue; }
+        const item = this.store.projectItems(project.id).find(i => i.kind === ref.itemKind && i.number === ref.number);
+        if (!item) continue;
+        add({ ref, channelId: project.channelId, ownerId: project.ownerId, sourceUrl: item.url, title: item.title, status: item.state, ...(item.author ? { owner: item.author } : {}) });
+        continue;
+      }
+      if (ref.kind === "url" && typeof ref.url === "string" && ref.url.length <= RICH_LINK_LIMITS.url
+        && /^https?:\/\//i.test(ref.url)) {
+        const candidates = this.store.projectsAll().filter(project => project.ownerId === userId)
+          .flatMap(project => this.store.projectItems(project.id)
+            .filter(item => item.url === ref.url)
+            .map(item => ({ project, item })))
+          .sort((a, b) => a.project.id.localeCompare(b.project.id)
+            || a.item.kind.localeCompare(b.item.kind) || a.item.number - b.item.number);
+        const match = candidates[0];
+        if (match) {
+          add({
+            ref: { kind: "projectItem", projectId: match.project.id, itemKind: match.item.kind, number: match.item.number },
+            channelId: match.project.channelId, ownerId: match.project.ownerId,
+            sourceUrl: ref.url, title: match.item.title, status: match.item.state,
+            ...(match.item.author ? { owner: match.item.author } : {}),
+          });
+        }
+      }
+    }
+    return out;
   }
 
   private sendPulseToAudience(project: Project, frame: ServerFrame): void {
@@ -2056,11 +2311,112 @@ private viewProject(project: Project, viewerId?: ID): Project {
   /** Where this person has read up to, in every conversation they can see. */
   private unreadFor(userId: ID, channels: Channel[]): UnreadEntry[] {
     const mine = this.myIds(userId);
-    return channels.map(c => ({
-      channelId: c.id,
-      lastReadTs: this.store.lastRead(userId, c.id),
-      ...this.store.unreadFor(userId, c.id, mine),
-    }));
+    return channels.map(c => {
+      const cursor = this.store.lastReadCursor(userId, c.id);
+      return {
+        channelId: c.id, lastReadTs: cursor.ts,
+        ...(cursor.id ? { lastReadId: cursor.id } : {}),
+        ...this.store.unreadFor(userId, c.id, mine),
+      };
+    });
+  }
+
+  /** Build the author-only delivery projection; group rows never contain recipient ids. */
+  private messageStatusFor(authorId: ID, message: Message): MessageStatus {
+    const channel = this.store.channel(message.channelId);
+    const ledger = this.store.messageSendStatus(authorId, message.clientMessageId, message.id);
+    // Receipt audience is frozen at message creation.  Current membership is
+    // only an access gate; a late joiner must not inflate an old message's
+    // recipient count, and a former member must remain part of the historical
+    // denominator even after their receipt metadata is cleaned up.
+    const humans = this.store.channelMembers(message.channelId, { at: message.ts })
+      .map(member => member.memberId)
+      .filter(id => !!this.store.user(id) && id !== authorId);
+    const receipts = this.store.messageReceipts(message.id).filter(r => humans.includes(r.recipientId));
+    const deliveredCount = receipts.filter(r => r.deliveredAt !== undefined || r.readAt !== undefined).length;
+    const readCount = receipts.filter(r => r.readAt !== undefined).length;
+    const stage: MessageStatus["stage"] = readCount > 0 && readCount >= humans.length && humans.length > 0
+      ? "read" : deliveredCount > 0 ? "delivered" : "accepted";
+    const directHuman = channel?.kind === "dm" && humans.length === 1;
+    return {
+      messageId: message.id, ...(message.clientMessageId ? { clientMessageId: message.clientMessageId } : {}),
+      channelId: message.channelId, stage,
+      acceptedAt: ledger?.createdAt ?? message.ts,
+      ...(receipts.find(r => r.deliveredAt !== undefined)?.deliveredAt !== undefined
+        ? { deliveredAt: receipts.find(r => r.deliveredAt !== undefined)!.deliveredAt } : {}),
+      ...(receipts.find(r => r.readAt !== undefined)?.readAt !== undefined
+        ? { readAt: receipts.find(r => r.readAt !== undefined)!.readAt } : {}),
+      deliveredCount, readCount, recipientCount: humans.length,
+      ...(directHuman ? {
+        recipients: receipts.filter(r => r.deliveredAt !== undefined || r.readAt !== undefined).map(r => ({
+          recipientId: r.recipientId,
+          stage: r.readAt !== undefined ? "read" as const : "delivered" as const,
+          at: r.readAt ?? r.deliveredAt!,
+        })),
+      } : {}),
+    };
+  }
+
+  private messageStatusesFor(authorId: ID): MessageStatus[] {
+    const channels = this.visibleChannels(authorId);
+    // `recentMessages(channels, 512)` is intentionally per-channel.  Do not
+    // slice the flattened result: channel ordering would let one busy room
+    // evict every other room's status from the bootstrap projection.
+    return channels.flatMap(channel => this.store.history(channel.id, {}, 512).items)
+      .filter(message => message.authorId === authorId)
+      .map(message => this.messageStatusFor(authorId, message));
+  }
+
+  private pushMessageStatus(authorId: ID, message: Message): void {
+    const channel = this.store.channel(message.channelId);
+    if (!channel || !this.audienceFor(channel).has(authorId)) return;
+    const frame: ServerFrame = { type: "messageStatus", status: this.messageStatusFor(authorId, message) };
+    // Delivery is a human author's window concern.  In particular, do not
+    // stream this projection to an engine connection, and never room-broadcast
+    // it: an engine is not a human reader and other members must not learn a
+    // sender's per-message state.
+    for (const conn of this.conns) {
+      if (conn.userId === authorId && conn.client !== "engine") send(conn.ws, frame);
+    }
+  }
+
+  /** Authenticate and apply one human delivered/read receipt. */
+  private handleHumanReceipt(conn: Conn, frame: Extract<ClientFrame, { type: "messageReceipt" | "humanReceipt" }>): void {
+    if (conn.client === "engine") throw new Error("agent engines cannot send human receipts");
+    // The TypeScript union is not a runtime boundary: a reconnecting or
+    // hand-written client can still put an arbitrary string on the wire.
+    // Refuse it before the store's read branch could interpret it as `read`.
+    if (frame.status !== "delivered" && frame.status !== "read") {
+      throw new Error("that receipt stage is not supported");
+    }
+    const channel = this.channelFor(conn.userId, frame.channelId);
+    // `channelFor` also permits a person's own agent to make the conversation
+    // visible.  A human receipt is narrower: the authenticated human account
+    // itself must be a current member, not merely the owner of an agent in the
+    // room.
+    if (!channel.memberIds.includes(conn.userId)) {
+      throw new Error("only a direct human member can acknowledge this message");
+    }
+    const message = this.store.message(frame.messageId);
+    if (!message || message.channelId !== channel.id) throw new Error("that message is not in this channel");
+    if (!this.store.channelMembers(channel.id, { at: message.ts }).some(member => member.memberId === conn.userId)) {
+      throw new Error("you were not a human member when that message was sent");
+    }
+    if (message.authorKind !== "human" || message.authorId === conn.userId) {
+      throw new Error("only another human recipient can acknowledge this message");
+    }
+    const cursorTs = frame.ts;
+    const cursorId = frame.messageIdCursor;
+    if (frame.status === "read" && cursorTs !== undefined) {
+      const latest = this.store.history(channel.id, {}, MESSAGE_LIMITS.page).items.at(-1);
+      if (latest && (cursorTs > latest.ts || (cursorTs === latest.ts && cursorId !== undefined && cursorId > latest.id))) {
+        throw new Error("that read cursor is ahead of this conversation");
+      }
+    }
+    const changed = this.store.recordMessageReceipt(conn.userId, message, frame.status, {
+      ts: cursorTs, id: cursorId,
+    });
+    if (changed) this.pushMessageStatus(message.authorId, message);
   }
 
   /** Project one durable row against the recipient's CURRENT access/message. */
@@ -2190,22 +2546,181 @@ private viewProject(project: Project, viewerId?: ID): Project {
    * another message — a parked file id is a claim, so all three are checked
    * against what is stored rather than trusted.
    */
-  private claimAttachments(userId: ID, channel: Channel, ids: ID[] | undefined, messageId: ID): Attachment[] {
+  private validateAttachments(userId: ID, channel: Channel, ids: ID[] | undefined): Attachment[] {
     if (!ids || ids.length === 0) return [];
-    if (ids.length > ATTACHMENT_LIMITS.perMessage) {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length > ATTACHMENT_LIMITS.perMessage) {
       throw new Error(`that's too many files (max ${ATTACHMENT_LIMITS.perMessage})`);
     }
     const out: Attachment[] = [];
-    for (const id of new Set(ids)) {
+    const now = Date.now();
+    for (const id of uniqueIds) {
       const row = this.store.attachment(id);
       if (!row) throw new Error("that file isn't ready to send");
       if (row.attachment.uploadedBy !== userId) throw new Error("that file isn't yours to send");
       if (row.channelId !== channel.id) throw new Error("that file was uploaded to another conversation");
       if (row.messageId) throw new Error("that file has already been sent");
-      this.store.claimAttachment(id, messageId);
+      const expiresAt = row.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+      const bytesPath = path.join(this.store.attachmentsDir, path.basename(row.attachment.storedAs));
+      if (row.attachment.uploadedAt > now || now >= expiresAt || !fs.existsSync(bytesPath)) {
+        this.store.removeParkedAttachment(id, userId);
+        throw new Error(row.attachment.uploadedAt > now
+          ? "that file is not available yet — attach it again"
+          : now >= expiresAt ? "that file expired — attach it again"
+            : "that file is no longer available — attach it again");
+      }
       out.push(row.attachment);
     }
     return out;
+  }
+
+  /**
+   * Re-project a draft attachment from relay-owned rows and bytes. A browser's
+   * metadata can name what it used to have, but it cannot make a reclaimed or
+   * inaccessible id available again.
+   */
+  private draftAttachment(userId: ID, channel: Channel, input: DraftAttachment): DraftAttachment {
+    const expiresAt = Number.isFinite(input.expiresAt) && input.expiresAt > 0
+      ? Math.floor(input.expiresAt) : input.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+    const fallback = (state: DraftAttachmentState, error: string): DraftAttachment => ({
+      id: input.id, name: input.name, size: input.size,
+      ...(input.mime ? { mime: input.mime.slice(0, 128) } : {}),
+      uploadedAt: input.uploadedAt, expiresAt, state, error,
+    });
+    if (input.state === "removed") return fallback("removed", "removed from this draft");
+    const row = this.store.attachment(input.id);
+    if (!row) return fallback(Date.now() >= expiresAt ? "expired" : "unavailable",
+      Date.now() >= expiresAt ? "that file expired — attach it again" : "that file is no longer available — attach it again");
+    if (row.attachment.uploadedBy !== userId || row.channelId !== channel.id) {
+      return fallback("unavailable", "that file is no longer available in this conversation — attach it again");
+    }
+    if (row.messageId) return fallback("deleted", "that file was already sent or deleted");
+    const actualExpiresAt = row.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+    // A client cannot make a future-dated upload available by projecting its
+    // metadata. Clock-skewed or tampered rows stay visibly unavailable until
+    // a fresh upload lands; send applies the same refusal at claim time.
+    if (row.attachment.uploadedAt > Date.now()) return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt,
+      state: "unavailable", error: "that file is not available yet — attach it again",
+    };
+    if (Date.now() >= actualExpiresAt) return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt,
+      state: "expired", error: "that file expired — attach it again",
+    };
+    const bytesPath = path.join(this.store.attachmentsDir, path.basename(row.attachment.storedAs));
+    if (!fs.existsSync(bytesPath)) return fallback("unavailable", "that file is no longer on the relay — attach it again");
+    return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt, state: "available",
+    };
+  }
+
+  private draftProjection(userId: ID, channel: Channel, draft: ChatDraft): ChatDraft {
+    const attachments = draft.attachments.slice(0, DRAFT_LIMITS.attachmentCount)
+      .map(a => this.draftAttachment(userId, channel, a));
+    const hasUnavailable = attachments.some(a => a.state === "unavailable" || a.state === "deleted");
+    const hasExpired = attachments.some(a => a.state === "expired");
+    const state = draft.text || attachments.some(a => a.state === "available")
+      ? (hasUnavailable ? "unavailable" : hasExpired ? "expired" : "active")
+      : (hasUnavailable ? "unavailable" : hasExpired ? "expired" : "empty");
+    return {
+      ...draft, channelId: channel.id, attachments, state,
+      // Projection reports the relay's current attachment truth but never
+      // moves the durable draft deadline forward. Reconcile must not become a
+      // keep-alive for an abandoned draft or a parked file.
+      expiresAt: Math.max(draft.expiresAt, ...attachments.map(a => a.expiresAt)),
+    };
+  }
+
+  private draftScope(conn: Conn, channelId: ID, threadId?: ID): { channel: Channel; threadId?: ID } {
+    const channel = this.channelFor(conn.userId, channelId);
+    if (threadId) {
+      const thread = this.store.message(threadId);
+      if (!thread || thread.channelId !== channel.id) throw new Error("that thread is no longer available");
+      return { channel, threadId: thread.replyTo ?? thread.id };
+    }
+    return { channel };
+  }
+
+  private draftInput(conn: Conn, frame: Extract<ClientFrame, { type: "draftUpdate" }>): ChatDraft {
+    const { channel, threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+    if (typeof frame.text !== "string" || frame.text.length > MESSAGE_LIMITS.text) {
+      throw new Error(`that draft is too long (max ${MESSAGE_LIMITS.text} characters)`);
+    }
+    if (!Array.isArray(frame.attachments) || frame.attachments.length > DRAFT_LIMITS.attachmentCount) {
+      throw new Error(`that draft has too many files (max ${DRAFT_LIMITS.attachmentCount})`);
+    }
+    const seen = new Set<ID>();
+    const attachments = frame.attachments.map(input => {
+      if (!input || typeof input.id !== "string" || !isSafeStoredId(input.id) || seen.has(input.id)) {
+        throw new Error("that draft has an invalid attachment");
+      }
+      seen.add(input.id);
+      if (typeof input.name !== "string" || !input.name || !Number.isFinite(input.size) || input.size < 0
+        || !Number.isFinite(input.uploadedAt) || !Number.isFinite(input.expiresAt)) {
+        throw new Error("that draft has invalid attachment details");
+      }
+      return this.draftAttachment(conn.userId, channel, input);
+    });
+    const now = Date.now();
+    return this.draftProjection(conn.userId, channel, {
+      id: this.store.draftId(conn.userId, channel.id, threadId), channelId: channel.id,
+      ...(threadId ? { threadId, replyTo: threadId } : {}), text: frame.text,
+      attachments, updatedAt: now,
+      expiresAt: Math.max(now + ATTACHMENT_LIMITS.parkedTtlMs, ...attachments.map(a => a.expiresAt)),
+      state: frame.text || attachments.length ? "active" : "empty",
+    });
+  }
+
+  /** Fingerprint the client's durable intent, excluding relay-derived state/expiry. */
+  private draftIntentHash(frame: Extract<ClientFrame, { type: "draftUpdate" }>, threadId?: ID): string {
+    const attachments = frame.attachments.map(input => ({
+      id: input.id, name: input.name, size: input.size,
+      mime: input.mime ?? null, uploadedAt: input.uploadedAt,
+    }));
+    return createHash("sha256").update(JSON.stringify([
+      "draftUpdate", frame.channelId, threadId ?? null, frame.text,
+      frame.replyTo ?? null, attachments,
+    ])).digest("hex");
+  }
+
+  private sendDraft(conn: Conn, draft: ChatDraft, requestId?: ID): void {
+    send(conn.ws, { type: "draftChanged", draft, ...(requestId ? { requestId } : {}) });
+  }
+
+  private inaccessibleDraft(draft: ChatDraft): ChatDraft {
+    return {
+      ...draft, state: "unavailable",
+      attachments: draft.attachments.map(a => a.state === "removed" ? a : {
+        ...a, state: "unavailable", error: "this conversation is no longer available",
+      }),
+    };
+  }
+
+  private projectDraftForUser(userId: ID, draft: ChatDraft): ChatDraft {
+    try {
+      const channel = this.channelFor(userId, draft.channelId);
+      return this.draftProjection(userId, channel, draft);
+    } catch {
+      return this.inaccessibleDraft(draft);
+    }
+  }
+
+  /** List only drafts whose room/thread is currently readable by this user. */
+  private visibleDrafts(conn: Conn, channelId?: ID, threadId?: ID): ChatDraft[] {
+    if (threadId && !channelId) throw new Error("a thread draft needs its channel");
+    const scope = channelId ? this.draftScope(conn, channelId, threadId) : undefined;
+    return this.store.chatDrafts(conn.userId, channelId, scope?.threadId)
+      .filter(draft => {
+        try { this.draftScope(conn, draft.channelId, draft.threadId); return true; }
+        catch { return false; }
+      })
+      .map(draft => this.projectDraftForUser(conn.userId, draft));
   }
 
   /**
@@ -2269,6 +2784,137 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const conn of this.conns) {
       if (audience.has(conn.userId)) send(conn.ws, frame);
     }
+  }
+
+  private typingKey(channelId: ID, userId: ID): string {
+    return `${channelId}\u0000${userId}`;
+  }
+
+  /** Stamp and schedule one live signal; the timer is the only expiry owner. */
+  private scheduleTypingExpiry(state: LiveTyping): void {
+    if (state.timer) clearTimeout(state.timer);
+    const delay = Math.max(0, state.expiresAt! - Date.now());
+    state.timer = setTimeout(() => {
+      const current = this.liveTyping.get(this.typingKey(state.channelId, state.userId));
+      if (current !== state) return;
+      if (Date.now() < state.expiresAt!) {
+        this.scheduleTypingExpiry(state);
+        return;
+      }
+      this.removeLiveTyping(state.channelId, state.userId);
+    }, delay);
+  }
+
+  /** Remove one signal and tell the channel's CURRENT authorized audience. */
+  private removeLiveTyping(channelId: ID, userId: ID, notify = true): void {
+    const key = this.typingKey(channelId, userId);
+    const state = this.liveTyping.get(key);
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    this.liveTyping.delete(key);
+    if (!notify) return;
+    const channel = this.store.channel(channelId);
+    if (!channel) return;
+    this.toChannel(channel, {
+      type: "typing",
+      typing: { channelId, userId, userName: state.userName, typing: false },
+    });
+  }
+
+  /** Project shared pins against the viewer's CURRENT channel access/source. */
+  private channelPinProjection(userId: ID, row: import("./store.js").ChannelPinRow): ChannelPinEntry {
+    const pinnedBy = this.store.user(row.pinnedById);
+    const base: ChannelPinEntry = {
+      id: row.id, channelId: row.channelId, messageId: row.messageId, pinnedAt: row.pinnedAt,
+      ...(pinnedBy ? { pinnedById: pinnedBy.id, pinnedByName: pinnedBy.name } : {}),
+      state: "inaccessible",
+    };
+    let channel: Channel;
+    try { channel = this.channelFor(userId, row.channelId); } catch { return base; }
+    const message = this.store.message(row.messageId);
+    if (!message || message.channelId !== channel.id) return base;
+    if (message.deletedAt) return { ...base, state: "deleted" };
+    return {
+      ...base, state: "active", message: this.hydrate([message])[0],
+      ...(message.replyTo ? { threadParentId: message.replyTo } : {}),
+    };
+  }
+
+  private channelPinsProjection(
+    userId: ID,
+    opts: { channelId: ID; limit?: number; beforePinnedAt?: number; beforeMessageId?: ID },
+  ): ChannelPinEntry[] {
+    return this.store.channelPinsPage(opts.channelId, opts.limit, opts.beforePinnedAt, opts.beforeMessageId)
+      .entries.map(row => this.channelPinProjection(userId, row));
+  }
+
+  /** Clear every live signal authored by one human (disconnect/removal path). */
+  private clearTypingForUser(userId: ID): void {
+    for (const state of [...this.liveTyping.values()]) {
+      if (state.userId === userId) this.removeLiveTyping(state.channelId, userId);
+    }
+  }
+
+  /** A blur/close only removes the signal from the window that sent it. */
+  private clearTypingForConnection(ws: WebSocket): void {
+    for (const state of [...this.liveTyping.values()]) {
+      if (!state.sources.delete(ws)) continue;
+      if (state.sources.size === 0) this.removeLiveTyping(state.channelId, state.userId);
+    }
+  }
+
+  /** Clear a room's signal once the person is no longer allowed to see it. */
+  private clearTypingForChannelUser(channelId: ID, userId: ID): void {
+    this.removeLiveTyping(channelId, userId);
+  }
+
+  /**
+   * Human typing is authenticated against stored membership and is never a
+   * request/response. The relay owns the displayed name, debounce and expiry.
+   */
+  private handleTyping(conn: Conn, frame: Extract<ClientFrame, { type: "typing" }>): void {
+    if (conn.client === "engine") throw new Error("agents cannot send human typing");
+    const channel = frame.typing
+      ? this.writableChannel(conn.userId, frame.channelId)
+      : this.channelFor(conn.userId, frame.channelId);
+    const user = this.store.user(conn.userId);
+    if (!user) throw new Error("no such person");
+    const key = this.typingKey(channel.id, user.id);
+    const current = this.liveTyping.get(key);
+    if (!frame.typing) {
+      // Repeated stops are intentionally silent. One person's other open
+      // window may still be typing in this room, so only its own source ends.
+      if (!current || !current.sources.delete(conn.ws)) return;
+      if (current.sources.size === 0) this.removeLiveTyping(channel.id, user.id);
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAt = now + HUMAN_TYPING_TTL_MS;
+    if (current) {
+      current.sources.add(conn.ws);
+      current.expiresAt = expiresAt;
+      this.scheduleTypingExpiry(current);
+      // Keep a noisy keydown stream in memory, but broadcast at most 4/sec.
+      if (now - current.lastBroadcastAt < HUMAN_TYPING_DEBOUNCE_MS) return;
+      current.lastBroadcastAt = now;
+      this.toChannel(channel, {
+        type: "typing",
+        typing: { channelId: channel.id, userId: user.id, userName: user.name, typing: true, expiresAt },
+      });
+      return;
+    }
+
+    const state: LiveTyping = {
+      channelId: channel.id, userId: user.id, userName: user.name,
+      typing: true, expiresAt, lastBroadcastAt: now, sources: new Set([conn.ws]),
+    };
+    this.liveTyping.set(key, state);
+    this.scheduleTypingExpiry(state);
+    this.toChannel(channel, {
+      type: "typing",
+      typing: { channelId: channel.id, userId: user.id, userName: user.name, typing: true, expiresAt },
+    });
   }
 
   /**
@@ -2678,6 +3324,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // membership rule used everywhere else in the relay.
     const stillVisible = this.visibleChannels(userId).some(c => c.id === channelId);
     if (stillVisible) return;
+    this.clearResponseStreams(stream => stream.ownerId === userId && stream.channelId === channelId);
+    this.clearTypingForChannelUser(channelId, userId);
     this.toUser(userId, { type: "channelLeft", channelId });
     // Leaving a project room also changes Pulse visibility. Refresh the scoped
     // feed immediately so a removed member cannot keep a cached update alive.
@@ -2689,6 +3337,77 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const project of this.store.projectsAll()) {
       if (project.channelId === channelId && project.ownerId !== userId) {
         this.toUser(userId, { type: "projectAccessRevoked", projectId: project.id });
+      }
+    }
+  }
+
+  /** Drop ephemeral response previews when their owner or access boundary goes away. */
+  private clearResponseStreams(
+    predicate: (stream: ActiveResponseStream) => boolean = () => true,
+    reason = "response preview ended because access changed",
+  ): void {
+    for (const [key, stream] of this.responseStreams) {
+      if (!predicate(stream)) continue;
+      const channel = this.store.channel(stream.channelId);
+      if (channel) {
+        this.toChannel(channel, {
+          type: "agentResponse",
+          stream: {
+            kind: "response-cancel", channelId: stream.channelId,
+            triggerMessageId: stream.triggerMessageId, agentId: stream.agentId,
+            turnId: stream.turnId, seq: stream.lastSeq + 1, at: Date.now(), reason,
+          },
+        });
+      }
+      if (stream.timer) clearTimeout(stream.timer);
+      this.tombstoneResponseStream(key);
+      this.responseStreams.delete(key);
+      const slot = responseStreamSlot(stream.ownerId, stream.channelId, stream.triggerMessageId, stream.agentId);
+      if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+    }
+  }
+
+  /** Remember a recently ended public turn without retaining any response text. */
+  private tombstoneResponseStream(key: string, now = Date.now()): void {
+    this.responseStreamTombstones.set(key, now + RESPONSE_STREAM_LIMITS.staleMs);
+    const max = RESPONSE_STREAM_LIMITS.maxActiveStreams * 4;
+    if (this.responseStreamTombstones.size <= max) return;
+    for (const [candidate, expiresAt] of this.responseStreamTombstones) {
+      if (expiresAt <= now || this.responseStreamTombstones.size > max) {
+        this.responseStreamTombstones.delete(candidate);
+      }
+      if (this.responseStreamTombstones.size <= max) break;
+    }
+  }
+
+  private responseStreamRecentlyEnded(key: string, now = Date.now()): boolean {
+    const expiresAt = this.responseStreamTombstones.get(key);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= now) {
+      this.responseStreamTombstones.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  /** Project a safe terminal event and forget its in-memory stream state. */
+  private failResponseStream(
+    channel: Channel, event: AgentResponseStreamEvent, reason: string, key?: string,
+  ): void {
+    const now = Date.now();
+    const projected: AgentResponseStreamEvent = {
+      ...event, kind: "response-fail", seq: Math.max(0, event.seq), at: now,
+      text: undefined, reason: reason.slice(0, RESPONSE_STREAM_LIMITS.reasonChars), channelId: channel.id,
+    };
+    this.toChannel(channel, { type: "agentResponse", stream: projected });
+    if (key) {
+      const active = this.responseStreams.get(key);
+      if (active?.timer) clearTimeout(active.timer);
+      this.tombstoneResponseStream(key, now);
+      this.responseStreams.delete(key);
+      if (active) {
+        const slot = responseStreamSlot(active.ownerId, active.channelId, active.triggerMessageId, active.agentId);
+        if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
       }
     }
   }
@@ -2756,6 +3475,36 @@ private viewProject(project: Project, viewerId?: ID): Project {
     if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
   }
 
+  /** Shared pins mirror to every authorized window; only the origin gets the receipt id. */
+  private tellChannelPins(
+    channel: Channel, requestId?: ID, origin?: Conn,
+    opts: { limit?: number; beforePinnedAt?: number; beforeMessageId?: ID } = {},
+  ): void {
+    const page = this.store.channelPinsPage(channel.id, opts.limit, opts.beforePinnedAt, opts.beforeMessageId);
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (!this.audienceFor(channel).has(conn.userId)) continue;
+      if (correlated && conn === origin) continue;
+      send(conn.ws, {
+        type: "channelPins", channelId: channel.id,
+        entries: this.channelPinsProjection(conn.userId, { ...opts, channelId: channel.id }),
+        revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+        ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+        ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+      });
+    }
+    if (correlated) {
+      send(origin!.ws, {
+        type: "channelPins", channelId: channel.id,
+        entries: this.channelPinsProjection(origin!.userId, { ...opts, channelId: channel.id }),
+        revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+        ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+        ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+        requestId: requestId!,
+      });
+    }
+  }
+
   private tellWorkflowRun(userId: ID, run: WorkflowRun, requestId?: ID, origin?: Conn): void {
     const base: ServerFrame = { type: "workflowRun", run };
     const correlated = Boolean(origin && requestId);
@@ -2773,21 +3522,56 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private createTaskFor(
     conn: Conn,
     input: {
-      agentId: ID; channelId: ID; title: string; requesterId?: ID;
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID;
+      sourceThreadId?: ID; deadlineAt?: number;
       causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
+    opts: { requestId?: ID; origin?: Conn } = {},
   ): Task {
-    const agent = this.myAgent(conn.userId, input.agentId);
-    const channel = this.channelFor(conn.userId, input.channelId);
-    const requester = this.requesterFor(conn, input.requesterId, channel);
-    if (!mayDriveAgent(requester.id, agent)) {
-      throw new Error(agent.name + " isn't set up to take work from " + requester.name);
-    }
+    const { agent, channel, requester, sourceThreadId } = this.authorizeTaskInput(conn, input);
+    const titleProblem = validateTaskTitle(input.title);
+    if (titleProblem) throw new Error(titleProblem);
+    const title = input.title.trim();
     const now = Date.now();
-    const needsApproval = requiresApproval(agent, input.title);
+    if (input.deadlineAt !== undefined &&
+      (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= now)) {
+      throw new Error("a task deadline must be in the future");
+    }
+    // A source message is the durable idempotency boundary for the inline
+    // message-to-task flow. A reconnecting window may retry with a fresh
+    // transport request id after losing its acknowledgement; never mint a
+    // second task (or a second approval) for the same source/payload.
+    if (input.sourceMessageId) {
+      const existing = this.store.tasksForSourceMessage(requester.id, input.sourceMessageId);
+      const matches = (prior: Task): boolean => prior.title === title
+        && prior.agentId === agent.id && prior.channelId === channel.id
+        && prior.requesterId === requester.id
+        && (prior.ownerId ?? prior.requesterId) === requester.id
+        && prior.sourceMessageId === input.sourceMessageId
+        && prior.sourceThreadId === sourceThreadId
+        && prior.deadlineAt === input.deadlineAt
+        && !!prior.causedByHook === !!input.causedByHook
+        && prior.workflowId === input.workflowId
+        && prior.workflowRunId === input.workflowRunId
+        && prior.workflowStepId === input.workflowStepId;
+      const canonical = existing.find(matches);
+      if (canonical) {
+        this.publishTask(canonical, opts.requestId, opts.origin);
+        return canonical;
+      }
+      if (existing.length > 0) {
+        throw new Error("that source message already has a task with different details");
+      }
+    }
+    const needsApproval = requiresApproval(agent, title);
     const task: Task = {
-      id: newId("t"), title: input.title,
+      id: newId("t"), title,
+      ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      ...(sourceThreadId ? { sourceThreadId } : {}),
+      ownerId: requester.id,
+      ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}),
+      ...(opts.requestId ? { createRequestId: opts.requestId } : {}),
       requesterId: requester.id, requesterName: requester.name,
       agentId: agent.id, channelId: channel.id,
       status: needsApproval ? "waiting_approval" : "not_started",
@@ -2802,7 +3586,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
       approval = {
         id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
         action: describeApproval(task.title), status: "pending", createdAt: now,
-        ...(input.workflowRunId ? { channelId: channel.id } : {}),
+        instructions: task.title,
+        revision: 0, approvalEpoch: newId("ae"), requesterId: requester.id,
+        channelId: channel.id,
       };
       task.approvalId = approval.id;
       this.store.saveApproval(approval);
@@ -2813,8 +3599,58 @@ private viewProject(project: Project, viewerId?: ID): Project {
     if (approval) this.sendApproval(approval);
     this.audit(conn, "task_created", task.id, "task for " + agent.name + ": " + task.title,
       { asUser: requester });
-    this.publishTask(task);
+    this.publishTask(task, opts.requestId, opts.origin);
     return task;
+  }
+
+  /** Re-run the exact same authorization checks before honoring a receipt. */
+  private authorizeTaskInput(
+    conn: Conn,
+    input: {
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID;
+      causedByHook?: boolean;
+      workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
+    },
+  ): { agent: AgentDef; channel: Channel; requester: User; sourceMessage?: Message; sourceThreadId?: ID } {
+    const agent = this.store.agents().find(candidate => candidate.id === input.agentId);
+    if (!agent) throw new Error("not your agent");
+    // An engine socket is a privileged pipe for its owner's agents only. A
+    // human socket may hand work to another room agent only when the stored
+    // mayDriveAgent rule explicitly permits that requester.
+    if (conn.client === "engine" && agent.ownerId !== conn.userId) {
+      throw new Error("not your agent");
+    }
+    const channel = this.channelFor(conn.userId, input.channelId);
+    if (channel.archivedAt) throw new Error("archived conversations are read-only");
+    if (!channel.memberIds.includes(agent.id)) {
+      throw new Error("that agent is not in this conversation");
+    }
+    const requester = this.requesterFor(conn, input.requesterId, channel);
+    if (conn.client !== "engine" && agent.ownerId !== conn.userId && !mayDriveAgent(requester.id, agent)) {
+      throw new Error("not your agent");
+    }
+    if (agent.lifecycle === "paused") throw new Error(agent.name + " is paused by its owner");
+    if (agent.lifecycle === "disabled") throw new Error(agent.name + " is switched off by its owner");
+    const sourceMessage = input.sourceMessageId ? this.store.message(input.sourceMessageId) : undefined;
+    if (input.sourceMessageId && (!sourceMessage || sourceMessage.channelId !== channel.id
+      || sourceMessage.authorKind !== "human" || sourceMessage.authorId !== requester.id)) {
+      throw new Error("the task source message is not this requester's message in this channel");
+    }
+    const canonicalRoot = sourceMessage ? (sourceMessage.replyTo ?? sourceMessage.id) : undefined;
+    if (input.sourceThreadId) {
+      const thread = this.store.message(input.sourceThreadId);
+      if (!thread || thread.channelId !== channel.id || thread.replyTo
+        || !canonicalRoot || canonicalRoot !== thread.id) {
+        throw new Error("the task source thread is not this message's thread");
+      }
+    }
+    if (!sourceMessage && input.sourceThreadId) {
+      throw new Error("a task source thread needs a source message");
+    }
+    if (!mayDriveAgent(requester.id, agent)) {
+      throw new Error(agent.name + " isn't set up to take work from " + requester.name);
+    }
+    return { agent, channel, requester, sourceMessage, sourceThreadId: canonicalRoot };
   }
 
   private persistWorkflowRun(run: WorkflowRun, requestId?: ID, origin?: Conn): void {
@@ -3046,28 +3882,420 @@ private viewProject(project: Project, viewerId?: ID): Project {
     }
   }
 
+  private threadSummaryKey(requesterId: ID, requestId: ID): string {
+    return `${requesterId}:${requestId}`;
+  }
+
+  /** Keep terminal outcomes for late-result rejection and honest retries. */
+  private settleThreadSummary(
+    key: string, request: ThreadSummaryRequest,
+    status: Extract<ThreadSummaryResult["status"], "refused" | "unavailable">,
+    error: string,
+  ): void {
+    this.threadSummaryPending.delete(key);
+    const result: ThreadSummaryResult = {
+      ...request, status, updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+      error: redactForSharing(error, THREAD_SUMMARY_LIMITS.error),
+    };
+    this.threadSummaryResults.set(key, result);
+    while (this.threadSummaryResults.size > THREAD_SUMMARY_LIMITS.pendingCount) {
+      this.threadSummaryResults.delete(this.threadSummaryResults.keys().next().value!);
+    }
+    // This contains no provider facts or source labels, so it is safe to tell
+    // every still-open window of the requester even after room access changed.
+    this.toUser(request.requesterId, { type: "threadSummary", summary: result, requestId: request.requestId });
+  }
+
+  private settleThreadSummaries(
+    predicate: (request: ThreadSummaryRequest) => boolean,
+    status: Extract<ThreadSummaryResult["status"], "refused" | "unavailable">,
+    error: string,
+  ): void {
+    for (const [key, request] of [...this.threadSummaryPending.entries()]) {
+      if (predicate(request)) this.settleThreadSummary(key, request, status, error);
+    }
+  }
+
+  /** Provider source labels are untrusted; compare only bounded factual fields. */
+  private threadSummaryFingerprint(result: ThreadSummaryResult): string {
+    return JSON.stringify({
+      requestId: result.requestId, channelId: result.channelId, threadId: result.threadId,
+      sourceMessageId: result.sourceMessageId, agentId: result.agentId, requesterId: result.requesterId,
+      status: result.status, decisions: result.decisions, openQuestions: result.openQuestions,
+      nextActions: result.nextActions, sources: result.sources.map(source => source.messageId),
+      runId: result.runId, error: result.error,
+    });
+  }
+
+  /** Validate current source/thread access before asking an owner's engine. */
+  private requestThreadSummary(conn: Conn, frame: Extract<ClientFrame, { type: "threadSummary" }>): void {
+    if (conn.client === "engine") throw new Error("only a person can ask for a thread summary");
+    const request: ThreadSummaryRequest = {
+      requestId: frame.requestId ?? newId("ts"), channelId: frame.channelId,
+      threadId: frame.threadId, sourceMessageId: frame.sourceMessageId,
+      agentId: frame.agentId, requesterId: conn.userId,
+    };
+    const badRequest = validateThreadSummaryRequest(request);
+    if (badRequest) throw new Error(badRequest);
+    const channel = this.channelFor(conn.userId, request.channelId);
+    const source = this.messageFor(conn.userId, request.sourceMessageId);
+    if (source.deletedAt) throw new Error("that summary source was deleted");
+    if (source.channelId !== channel.id || source.id !== request.threadId || source.replyTo) {
+      throw new Error("that summary source is not the thread root");
+    }
+    const agent = this.store.agents().find(candidate => candidate.id === request.agentId);
+    if (!agent || !channel.memberIds.includes(agent.id)) throw new Error("that agent is not in this thread");
+    if (!mayDriveAgent(conn.userId, agent)) throw new Error("you may not ask that agent for a summary");
+    const key = this.threadSummaryKey(conn.userId, request.requestId);
+    const prior = this.threadSummaryResults.get(key);
+    if (prior) {
+      send(conn.ws, { type: "threadSummary", summary: prior, requestId: frame.requestId });
+      return;
+    }
+    const existing = this.threadSummaryPending.get(key);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(request)) throw new Error("that summary request id was already used");
+      send(conn.ws, {
+        type: "threadSummary", summary: {
+          ...request, status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+        }, requestId: frame.requestId,
+      });
+      return;
+    }
+    if (this.threadSummaryPending.size >= THREAD_SUMMARY_LIMITS.pendingCount) {
+      throw new Error("too many thread summaries are pending; wait for one to finish and try again");
+    }
+    this.threadSummaryPending.set(key, request);
+    send(conn.ws, {
+      type: "threadSummary", summary: {
+        ...request, status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+      }, requestId: frame.requestId,
+    });
+    this.toEngines(agent.ownerId, { type: "threadSummaryRequest", request });
+  }
+
+  /** Accept only an owner's engine result, then re-authorize every source. */
+  private recordThreadSummary(conn: Conn, result: ThreadSummaryResult): void {
+    if (conn.client !== "engine") throw new Error("only the engine reports a thread summary");
+    // The frame is untrusted at runtime even though the TypeScript signature is
+    // narrow.  Recover the only identity fields we may use to find a pending
+    // request before validating the rest, so malformed provider output cannot
+    // strand that request forever.
+    const candidate = (result && typeof result === "object" ? result : {}) as Partial<ThreadSummaryResult>;
+    const candidateRequestId = typeof candidate.requestId === "string" ? candidate.requestId : undefined;
+    const candidateRequesterId = typeof candidate.requesterId === "string" ? candidate.requesterId : undefined;
+    const key = candidateRequestId && candidateRequesterId
+      ? this.threadSummaryKey(candidateRequesterId, candidateRequestId) : undefined;
+    const pending = key ? this.threadSummaryPending.get(key) : undefined;
+    const settleOnError = (error: unknown): void => {
+      if (!key || !pending || this.threadSummaryPending.get(key) !== pending) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.settleThreadSummary(key, pending, "unavailable", `the thread summary became unavailable: ${reason}`);
+    };
+
+    try {
+      const bad = validateThreadSummaryResult(result);
+      if (bad) throw new Error(bad);
+      const agent = this.myAgent(conn.userId, result.agentId);
+      // Re-authorize the root and requester before even considering an
+      // idempotent replay. A previously accepted result must not resurrect a
+      // deleted/tombstoned source (or project through stale requester access).
+      const channel = this.channelFor(conn.userId, result.channelId);
+      const source = this.messageFor(conn.userId, result.sourceMessageId);
+      if (source.deletedAt) throw new Error("that summary source was deleted");
+      if (source.id !== result.threadId || source.channelId !== channel.id || source.replyTo) {
+        throw new Error("that summary source is no longer the thread root");
+      }
+      const requesterChannel = this.channelFor(result.requesterId, result.channelId);
+      const verifiedSources = result.sources.map(item => {
+        const message = this.messageFor(conn.userId, item.messageId);
+        if (message.deletedAt) throw new Error("that summary cites a deleted message");
+        if (message.channelId !== channel.id || !(message.id === result.threadId || message.replyTo === result.threadId)) {
+          throw new Error("that summary cites a message outside the requested thread");
+        }
+        return { messageId: message.id, label: redactForSharing(`${message.authorName}: ${message.text}`, THREAD_SUMMARY_LIMITS.sourceLabel) };
+      });
+      const prior = this.threadSummaryResults.get(key!);
+      if (prior) {
+        if (this.threadSummaryFingerprint(prior) !== this.threadSummaryFingerprint(result)) {
+          throw new Error("that summary result conflicts with the accepted request");
+        }
+        this.toUser(result.requesterId, { type: "threadSummary", summary: prior, requestId: result.requestId });
+        return;
+      }
+      if (!pending || JSON.stringify(pending) !== JSON.stringify({
+        requestId: result.requestId, channelId: result.channelId, threadId: result.threadId,
+        sourceMessageId: result.sourceMessageId, agentId: result.agentId, requesterId: result.requesterId,
+      })) throw new Error("that summary result has no pending request");
+      const safe: ThreadSummaryResult = {
+        ...result,
+        decisions: result.decisions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        openQuestions: result.openQuestions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        nextActions: result.nextActions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        sources: verifiedSources,
+      };
+      const safeBad = validateThreadSummaryResult(safe);
+      if (safeBad) throw new Error(safeBad);
+      this.threadSummaryPending.delete(key!);
+      this.threadSummaryResults.set(key!, safe);
+      while (this.threadSummaryResults.size > 128) this.threadSummaryResults.delete(this.threadSummaryResults.keys().next().value!);
+      // The lookup above is deliberately retained as a proof of current
+      // requester access; it is not provider-controlled projection data.
+      void agent; void requesterChannel;
+      this.toChannel(channel, { type: "threadSummary", summary: safe, requestId: result.requestId });
+    } catch (error) {
+      settleOnError(error);
+      throw error;
+    }
+  }
+
+  /**
+   * Apply the non-executing half of an inline checkpoint. Every edit or
+   * clarification invalidates older buttons and leaves the card pending; only
+   * a later, explicit approved decision can release the engine/task.
+   */
+  private mutateApprovalCheckpoint(
+    conn: Conn,
+    frame: Extract<ClientFrame, { type: "decideApproval" | "editApproval" | "askApprovalQuestion" }>,
+  ): void {
+    const requestProblem = validateApprovalCheckpointRequestId(frame.requestId);
+    if (requestProblem) throw new Error(requestProblem);
+    const requestId = frame.requestId!;
+    const approvalId = frame.type === "decideApproval" || frame.type === "editApproval"
+      || frame.type === "askApprovalQuestion" ? frame.approvalId : "";
+    const operation = frame.type === "editApproval" ? "edit"
+      : frame.type === "askApprovalQuestion" ? "question"
+        : frame.type === "decideApproval" ? frame.decision : undefined;
+    if (operation !== "edit" && operation !== "question") throw new Error("that is not a checkpoint edit");
+    const approval = this.store.approval(approvalId);
+    if (!approval) throw new Error("no such approval");
+    const agent = this.store.agents().find(a => a.id === approval.agentId
+      && a.ownerId === approval.ownerId);
+    if (!agent) throw new Error("that approval's agent is no longer available");
+    if (approval.channelId) this.channelFor(conn.userId, approval.channelId);
+    const allowed = approval.ownerId === conn.userId || approval.requesterId === conn.userId;
+    if (!allowed) throw new Error("only the approval owner or requester can change this checkpoint");
+    const revision = approval.revision ?? 0;
+    const epoch = approval.approvalEpoch ?? "";
+    const payloadHash = stableApprovalCheckpointHash(frame);
+    const prior = approval.checkpointReceipts?.find(receipt => receipt.requestId === requestId)
+      ?? (approval.lastCheckpoint?.requestId === requestId ? approval.lastCheckpoint : undefined);
+    if (prior) {
+      if (prior.actorId !== conn.userId) {
+        throw new Error("that checkpoint request id belongs to another person");
+      }
+      if (prior.payloadHash !== payloadHash) {
+        throw new Error("that checkpoint request id was already used for different work");
+      }
+      this.sendApproval(approval);
+      return;
+    }
+    if (!Number.isSafeInteger(frame.expectedRevision) || !epoch
+      || typeof frame.approvalEpoch !== "string" || frame.expectedRevision !== revision
+      || frame.approvalEpoch !== epoch) {
+      throw new Error("this approval changed; refresh it before trying again");
+    }
+    if (approval.status !== "pending") throw new Error("that approval is no longer pending");
+    const now = Date.now();
+    if (operation === "edit") {
+      // Only job-shaped approvals have a durable execution field we can update
+      // atomically before the eventual task starts. Plans, remote actions and
+      // saving proposals have closed facts whose safe execution cannot be
+      // rewritten from arbitrary prose, so their Edit control is intentionally
+      // absent and the relay refuses forged edits too.
+      if (!approval.taskId || (approval.kind !== undefined && approval.kind !== "task")) {
+        throw new Error("this approval kind cannot safely revise its instructions");
+      }
+      const value = frame.type === "editApproval" || frame.type === "decideApproval"
+        ? frame.instructions : undefined;
+      const bad = validateApprovalInstructions(value);
+      if (bad) throw new Error(bad);
+      const instructions = tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.instructions);
+      approval.instructions = instructions;
+      // Job-shaped cards execute the exact revised task title after approval.
+      const task = this.store.task(approval.taskId);
+      if (!task || task.status !== "waiting_approval") {
+        throw new Error("that job is no longer waiting for revised instructions");
+      }
+      task.title = instructions;
+      task.updatedAt = now;
+      this.store.saveTask(task);
+      this.publishTask(task);
+    } else {
+      const value = frame.type === "askApprovalQuestion" || frame.type === "decideApproval"
+        ? frame.question : undefined;
+      const bad = validateApprovalQuestion(value);
+      if (bad) throw new Error(bad);
+      const text = tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.question);
+      const clarifications = approval.clarifications ? [...approval.clarifications] : [];
+      clarifications.push({ id: newId("aq"), askedBy: conn.userId, text, createdAt: now });
+      approval.clarifications = clarifications.slice(-20);
+    }
+    approval.revision = revision + 1;
+    approval.approvalEpoch = newId("ae").slice(0, APPROVAL_CHECKPOINT_LIMITS.epoch);
+    const receipt = {
+      requestId, actorId: conn.userId, operation, payloadHash, revision: approval.revision,
+    };
+    approval.lastCheckpoint = receipt;
+    approval.checkpointReceipts = [...(approval.checkpointReceipts ?? []), receipt].slice(-20);
+    this.store.saveApproval(approval);
+    this.audit(conn, "approval_checkpoint", approval.id,
+      operation === "edit" ? "updated approval instructions" : "asked an approval clarification");
+    this.sendApproval(approval);
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
+      case "typing":
+        this.handleTyping(conn, frame);
+        break;
+      case "draftList": {
+        this.store.sweepChatDrafts(Date.now());
+        const drafts = this.visibleDrafts(conn, frame.channelId, frame.threadId);
+        send(conn.ws, { type: "drafts", drafts, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "draftReconcile": {
+        this.store.sweepChatDrafts(Date.now());
+        const drafts = this.visibleDrafts(conn, frame.channelId, frame.threadId);
+        // Reconcile is deliberately a projection/reclaim pass, not a TTL
+        // extension. Valid parked ids remain owned by the attachment store;
+        // expired/missing rows are marked so the UI can remove/reselect them.
+        for (const draft of drafts) {
+          try { this.store.reclaimChatDraftAttachments(conn.userId, draft); } catch { /* projection remains honest */ }
+        }
+        send(conn.ws, { type: "drafts", drafts, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "draftReclaim": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        const existing = this.store.chatDraft(conn.userId, frame.channelId, threadId);
+        if (!existing) {
+          send(conn.ws, { type: "draftRemoved", channelId: frame.channelId, ...(threadId ? { threadId } : {}), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+          break;
+        }
+        const projected = this.projectDraftForUser(conn.userId, existing);
+        const keptIds = frame.attachmentIds ? new Set(frame.attachmentIds) : undefined;
+        const next = keptIds ? { ...projected, attachments: projected.attachments.filter(a => keptIds.has(a.id)) } : projected;
+        const saved = this.store.reclaimChatDraftAttachments(conn.userId, next, frame.requestId);
+        this.sendDraft(conn, this.projectDraftForUser(conn.userId, saved), frame.requestId);
+        this.toUserExcept(conn.userId, conn, { type: "draftChanged", draft: this.projectDraftForUser(conn.userId, saved) });
+        break;
+      }
+      case "draftUpdate": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        const input = this.draftInput(conn, frame);
+        const saved = this.store.saveChatDraft(conn.userId, input, frame.requestId, this.draftIntentHash(frame, threadId));
+        const projected = this.projectDraftForUser(conn.userId, saved);
+        this.sendDraft(conn, projected, frame.requestId);
+        this.toUserExcept(conn.userId, conn, { type: "draftChanged", draft: projected });
+        break;
+      }
+      case "draftRemove": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        this.store.removeChatDraft(conn.userId, frame.channelId, threadId, frame.requestId);
+        const out: ServerFrame = {
+          type: "draftRemoved", channelId: frame.channelId,
+          ...(threadId ? { threadId } : {}),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        };
+        send(conn.ws, out);
+        this.toUserExcept(conn.userId, conn, {
+          type: "draftRemoved", channelId: frame.channelId,
+          ...(threadId ? { threadId } : {}),
+        });
+        break;
+      }
+      case "threadSummary":
+        this.requestThreadSummary(conn, frame);
+        break;
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
+        const clientMessageId = frame.clientMessageId ?? frame.tempId ?? newId("cm");
+        const existing = this.store.messageSendStatus(conn.userId, clientMessageId);
+        // A retry is an acknowledgement recovery operation, not a new write.
+        // Authorise the original channel first (so removal still refuses), but
+        // do not re-run mutable write/reply gates such as archive status.
+        if (existing) {
+          this.channelFor(conn.userId, existing.channelId);
+          const payloadHash = this.store.messagePayloadHash({
+            channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo,
+            attachmentIds: frame.attachmentIds, invocation: frame.invocation,
+          });
+          if (existing.channelId !== frame.channelId || existing.payloadHash !== payloadHash) {
+            throw new Error("that client message id was already used for different words");
+          }
+          const priorMessage = this.store.message(existing.messageId);
+          if (!priorMessage) throw new Error("that accepted message is no longer available");
+          send(conn.ws, { type: "message", message: this.hydrate([priorMessage])[0], tempId: frame.tempId, requestId: frame.requestId });
+          this.pushMessageStatus(conn.userId, priorMessage);
+          break;
+        }
         const channel = this.writableChannel(conn.userId, frame.channelId); // you may only post where you are
-        const hasFiles = (frame.attachmentIds?.length ?? 0) > 0;
+        const attachmentIds = [...new Set(frame.attachmentIds ?? [])];
+        const hasFiles = attachmentIds.length > 0;
         // words are optional only when a file is carrying the message
         const bad = validateMessageText(frame.text, hasFiles);
         if (bad) throw new Error(bad);
         const replyTo = this.resolveReplyTo(channel, frame.replyTo);
+        const invocation = this.invocationFor(conn, channel, frame.text, frame.invocation);
+        const payloadHash = this.store.messagePayloadHash({
+          channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo, attachmentIds: frame.attachmentIds,
+          invocation,
+        });
+        // The same 24-hour parked TTL applies at send time, not just at relay
+        // startup/upload. A stale draft id must be refused rather than claimed.
+        this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
         const id = newId("m");
-        const attachments = this.claimAttachments(conn.userId, channel, frame.attachmentIds, id);
-        this.postMessage({
+        const attachments = this.validateAttachments(conn.userId, channel, attachmentIds);
+        const saved = this.postMessage({
           id, channelId: frame.channelId,
           authorId: user.id, authorName: user.name, authorKind: "human",
+          clientMessageId,
           text: frame.text, ts: Date.now(),
-          mentions: this.mentionsFor(conn.userId, frame.text),
+          mentions: [...new Set([
+            ...this.mentionsFor(conn.userId, frame.text),
+            ...(invocation ? [invocation.agentId] : []),
+          ])],
+          ...(invocation ? { invocation } : {}),
           ...(replyTo ? { replyTo } : {}),
           ...(attachments.length ? { attachments } : {}),
-        }, frame.tempId);
+        }, frame.tempId, frame.requestId, conn.userId, replyTo, attachmentIds,
+          clientMessageId, payloadHash);
+        // A concurrent first attempt may have committed between the status
+        // check and the transaction. Return its canonical row to this socket;
+        // do not broadcast or notify it a second time.
+        if (saved.replayed) {
+          send(conn.ws, { type: "message", message: saved.message,
+            ...(frame.tempId ? { tempId: frame.tempId } : {}),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        }
+        // A draft is cleared only after postMessage has accepted and stored the
+        // message. The Store method commits both rows together; postMessage
+        // broadcasts the resulting correlated removal to other devices.
         break;
       }
+      case "messageStatus": {
+        if (conn.client === "engine") throw new Error("message status is only available to human windows");
+        const row = this.store.messageSendStatus(conn.userId, frame.clientMessageId, frame.messageId);
+        if (!row) throw new Error("that accepted message is not available");
+        const message = this.store.message(row.messageId);
+        if (!message || message.authorId !== conn.userId) throw new Error("that accepted message is not available");
+        // The send ledger is intentionally durable across reconnects, but it
+        // is not a channel-access grant.  An author who has since left (or was
+        // removed from) the conversation must not use a lost-ack query to
+        // recover old DM recipient identities or any other status projection.
+        const channel = this.store.channel(message.channelId);
+        if (!channel || !channel.memberIds.includes(conn.userId)) {
+          throw new Error("that accepted message is not available");
+        }
+        send(conn.ws, { type: "messageStatus", status: this.messageStatusFor(conn.userId, message), requestId: frame.requestId });
+        break;
+      }
+      case "messageReceipt":
+      case "humanReceipt":
+        this.handleHumanReceipt(conn, frame);
+        break;
       case "agentSend": {
         const agent = this.myAgent(conn.userId, frame.agentId);
         // an agent speaks where it (or its owner) belongs, nowhere else
@@ -3081,6 +4309,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           authorEmoji: agent.emoji, text: frame.text, ts: Date.now(),
           proactive: frame.proactive,
           mentions: this.mentionsFor(conn.userId, frame.text),
+          ...(frame.responseTriggerMessageId ? { responseTriggerMessageId: frame.responseTriggerMessageId } : {}),
           ...(replyTo ? { replyTo } : {}),
         });
         break;
@@ -3345,6 +4574,36 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
       }
+      case "channelMemoryPolicies": {
+        const ch = this.channelFor(conn.userId, frame.channelId);
+        send(conn.ws, {
+          type: "channelMemoryPolicies", channelId: ch.id,
+          policies: this.store.channelMemoryPolicies(ch.id), requestId: frame.requestId,
+        });
+        break;
+      }
+      case "setChannelMemoryPolicy": {
+        if (conn.client === "engine") throw new Error("an agent engine cannot change channel memory policy");
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        if (!isChannelMemoryMode(frame.mode)) throw new Error("that memory policy is not supported");
+        const agent = this.store.agents().find(candidate => candidate.id === frame.agentId);
+        if (!agent || !ch.memberIds.includes(agent.id)) throw new Error("that agent is not in this conversation");
+        // A room manager can only govern an agent they own. This prevents an
+        // admin from changing another person's agent's durable memory merely
+        // because both agents happen to share a room.
+        if (agent.ownerId !== conn.userId) throw new Error("you can only change memory policy for your own agent");
+        const result = this.store.setChannelMemoryPolicy({
+          ownerId: conn.userId, actorId: conn.userId, channelId: ch.id, agentId: agent.id,
+          mode: frame.mode, expectedRevision: frame.expectedRevision, requestId: frame.requestId,
+        });
+        const base: ServerFrame = { type: "channelMemoryPolicy", policy: result.policy };
+        // Broadcast projections without the originating request id. A second
+        // window must converge from the policy itself, never inherit a request
+        // id it did not mint.
+        this.toChannel(ch, base);
+        if (frame.requestId) send(conn.ws, { ...base, requestId: frame.requestId });
+        break;
+      }
       case "setChannelVisibility": {
         if (frame.visibility !== "open" && frame.visibility !== "private") {
           throw new Error("a conversation is either open or private");
@@ -3362,6 +4621,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (frame.archived) {
           ch.archivedAt = Date.now();
           ch.archivedBy = conn.userId;
+          this.settleThreadSummaries(request => request.channelId === ch.id,
+            "unavailable", "the conversation was archived before the summary was ready");
+          // An archived conversation is read-only. End any in-flight preview
+          // rather than letting an engine continue projecting into a room that
+          // no longer accepts durable agent messages.
+          this.clearResponseStreams(stream => stream.channelId === ch.id);
         } else {
           ch.archivedAt = undefined;
           ch.archivedBy = undefined;
@@ -3405,6 +4670,11 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+        if (!this.visibleChannels(conn.userId).some(channel => channel.id === ch.id)) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.requesterId === conn.userId,
+            "unavailable", "the requester no longer has access to this conversation");
+        }
+        this.clearResponseStreams(stream => stream.ownerId === conn.userId && stream.channelId === ch.id);
         this.invalidateHuddlesForMember(conn.userId, ch.id);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
         this.tellLeft(conn.userId, ch.id);
@@ -3425,10 +4695,21 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
+        const removedAgent = this.store.agents().find(a => a.id === frame.memberId);
+        if (removedAgent) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.agentId === removedAgent.id,
+            "unavailable", "the selected agent is no longer in this conversation");
+        }
+        if (!removedAgent && !this.visibleChannels(frame.memberId).some(channel => channel.id === ch.id)) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.requesterId === frame.memberId,
+            "unavailable", "the requester no longer has access to this conversation");
+        }
+        this.clearResponseStreams(stream => stream.channelId === ch.id
+          && (stream.agentId === frame.memberId || (!!removedAgent && stream.ownerId === removedAgent.ownerId)));
         this.invalidateHuddlesForMember(frame.memberId, ch.id);
         this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
         // an agent's place in a room belongs to its owner's screen
-        const agent = this.store.agents().find(a => a.id === frame.memberId);
+        const agent = removedAgent;
         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
         this.tellSaved(agent ? agent.ownerId : frame.memberId);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
@@ -3455,6 +4736,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_role_changed", ch.id, `changed a role in ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.broadcastChannelMembers(ch.id);
         break;
       }
       case "channelMembers": {
@@ -3573,6 +4855,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
+        this.settleThreadSummaries(request => request.agentId === existing.id,
+          "unavailable", "the selected agent was deleted before the summary was ready");
         // Deleting an agent also forgets its run rows. Re-project any durable
         // Canvas blocks that linked those runs so readers see the honest
         // unavailable state instead of a stale owner-only id forever.
@@ -3582,6 +4866,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
             block.link?.kind === "run" && deletedRunIds.has(block.link.id))));
         const affectedHuddles = this.store.huddles().filter(h => h.participants.some(p => p.id === frame.agentId));
         this.stopRunsForDeletedAgent(conn, frame.agentId);
+        this.clearResponseStreams(stream => stream.agentId === frame.agentId);
         this.store.deleteAgent(frame.agentId);
         for (const before of affectedHuddles) {
           const updated = this.store.huddle(before.id);
@@ -3641,6 +4926,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const target = this.store.user(frame.userId);
         if (!target) throw new Error("no such person");
         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
+        const theirAgentIds = new Set(theirAgents.map(agent => agent.id));
+        this.settleThreadSummaries(request => request.requesterId === target.id
+          || theirAgentIds.has(request.agentId),
+        "unavailable", "the requester or selected agent is no longer available");
+        this.clearResponseStreams(stream => stream.ownerId === target.id
+          || theirAgents.some(agent => agent.id === stream.agentId));
         const affectedArtifacts = this.store.channels()
           .filter(ch => ch.memberIds.includes(target.id))
           .map(ch => {
@@ -3664,6 +4955,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
             this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
           }
         }
+        this.clearTypingForUser(target.id);
         // Tombstone their project posts BEFORE the account row goes, and push
         // each tombstone to remaining members — same live-feed discipline as
         // socialUnavailable on project leave. Hard-delete would leave open
@@ -3697,11 +4989,42 @@ private viewProject(project: Project, viewerId?: ID): Project {
         break;
       }
       case "createTask": {
-        this.createTaskFor(conn, {
+        const requestId = this.taskRequestId(frame.requestId);
+        const payloadHash = this.taskPayloadHash(frame);
+        if (requestId) {
+          const prior = this.store.taskRequest(conn.userId, requestId);
+          if (prior) {
+            const replay = this.store.task(prior.taskId);
+            if (!replay) throw new Error("the earlier delegated task is no longer available");
+            // A receipt proves what happened, not that today's permissions are
+            // still the same. Re-run the complete current room/source/drive
+            // gate before replaying any task projection.
+            this.authorizeTaskInput(conn, {
+              agentId: replay.agentId, channelId: replay.channelId, title: replay.title,
+              requesterId: replay.requesterId,
+              ...(replay.sourceMessageId ? { sourceMessageId: replay.sourceMessageId } : {}),
+              ...(replay.sourceThreadId ? { sourceThreadId: replay.sourceThreadId } : {}),
+            });
+            if (prior.payloadHash !== payloadHash) {
+              throw new Error("that request id was already used for different work");
+            }
+            this.publishTask(replay, requestId, conn);
+            break;
+          }
+        }
+        const task = this.createTaskFor(conn, {
           agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
           requesterId: frame.requesterId,
+          ...(frame.sourceMessageId ? { sourceMessageId: frame.sourceMessageId } : {}),
+          ...(frame.sourceThreadId ? { sourceThreadId: frame.sourceThreadId } : {}),
+          ...(frame.deadlineAt !== undefined ? { deadlineAt: frame.deadlineAt } : {}),
           ...(frame.causedByHook ? { causedByHook: true } : {}),
-        });
+        }, { requestId, origin: conn });
+        if (requestId) {
+          this.store.saveTaskRequest({
+            requesterId: conn.userId, requestId, payloadHash, taskId: task.id, createdAt: Date.now(),
+          });
+        }
         break;
         /*
         // Two questions, both answered from STORED state, never from the frame
@@ -3886,6 +5209,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         // check `recordRun` makes, for the same reason
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE SENTENCE IS WRITTEN HERE, from the facts, exactly as
         // `describeApproval` writes the job-shaped one. The agent supplied a
@@ -3895,6 +5219,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: describeRemoteAction(frame.facts).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: describeRemoteAction(frame.facts).slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "action", remoteAction: frame.facts.action, channelId: channel.id,
           ...(taskId ? { taskId } : {}),
           ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
@@ -3938,6 +5264,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!askId) throw new Error("that request has no label to answer against");
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE AGENT WROTE THE PLAN, SO THE PLAN IS CONTAINED — bounded and
         // stripped by `tidyPlan` here, at the hub, on the way in. The line the
@@ -3949,6 +5276,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: planHeadline(plan).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: plan,
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "plan", channelId: channel.id,
           plan,
           ...(taskId ? { taskId } : {}),
@@ -3987,6 +5316,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!askId) throw new Error("that request has no label to answer against");
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE AGENT WROTE THE REASON, SO THE REASON IS CONTAINED — bounded and
         // stripped by `tidySaving` here, at the hub, on the way in. Everything
@@ -4005,6 +5335,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: savingHeadline(proposal).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: savingHeadline(proposal).slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "saving", channelId: channel.id,
           detail: savingDetail(proposal).slice(0, APPROVAL_LIMITS.detail),
           saving: proposal,
@@ -4017,18 +5349,104 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.sendApproval(approval);
         break;
       }
+      case "editApproval":
+      case "askApprovalQuestion":
+        this.mutateApprovalCheckpoint(conn, frame);
+        break;
       case "decideApproval": {
+        const requestProblem = validateApprovalCheckpointRequestId(frame.requestId);
+        if (requestProblem) throw new Error(requestProblem);
+        const requestId = frame.requestId!;
+        if (frame.decision === "edit" || frame.decision === "question") {
+          this.mutateApprovalCheckpoint(conn, frame);
+          break;
+        }
         // a card he has already answered is not answerable twice
         const approval = this.store.approval(frame.approvalId);
         if (!approval) throw new Error("no such approval");
         // Provisional policy (PARKING-LOT D4): only the agent's owner decides.
         if (approval.ownerId !== conn.userId) throw new Error("only the agent's owner can decide this");
+        const currentAgent = this.store.agents().find(a => a.id === approval.agentId
+          && a.ownerId === approval.ownerId);
+        if (!currentAgent) throw new Error("that approval's agent is no longer available");
+        if (approval.channelId) this.channelFor(conn.userId, approval.channelId);
+        const revision = approval.revision ?? 0;
+        const epoch = approval.approvalEpoch ?? "";
+        const payloadHash = stableApprovalCheckpointHash(frame);
+        const prior = approval.checkpointReceipts?.find(receipt => receipt.requestId === requestId)
+          ?? (approval.lastCheckpoint?.requestId === requestId ? approval.lastCheckpoint : undefined);
+        if (prior) {
+          if (prior.actorId !== conn.userId) {
+            throw new Error("that checkpoint request id belongs to another person");
+          }
+          if (prior.payloadHash !== payloadHash) {
+            throw new Error("that checkpoint request id was already used for different work");
+          }
+          this.sendApproval(approval);
+          break;
+        }
+        if (!Number.isSafeInteger(frame.expectedRevision) || !epoch
+          || typeof frame.approvalEpoch !== "string" || frame.expectedRevision !== revision
+          || frame.approvalEpoch !== epoch) {
+          throw new Error("this approval changed; refresh it before trying again");
+        }
         if (approval.status !== "pending") break; // FR-AP-004: no re-execution through decided approvals
         approval.status = frame.decision;
         approval.decidedBy = conn.userId;
         approval.decidedAt = Date.now();
+        const receipt = {
+          requestId,
+          actorId: conn.userId,
+          operation: frame.decision,
+          payloadHash,
+          revision,
+        };
+        approval.lastCheckpoint = receipt;
+        approval.checkpointReceipts = [...(approval.checkpointReceipts ?? []), receipt].slice(-20);
         this.store.saveApproval(approval);
         this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
+        if (approval.recoveryRequestId) {
+          const key = this.recoveryChallengeKey(approval.ownerId, approval.recoveryRequestId);
+          const pending = this.pendingRecovery.get(key);
+          if (pending) {
+            this.pendingRecovery.delete(key);
+            const target = this.store.run(pending.runId);
+            const currentAgent = target && target.ownerId === approval.ownerId
+              ? this.store.agents().find(a => a.id === pending.agentId) : undefined;
+            const currentDecision = target && currentAgent
+              ? recoveryDecision(target.record, this.store.checkpointForRun(target.record.id, target.agentId, target.ownerId)) : undefined;
+            const currentAction = currentDecision?.actions.find(a => a.mode === pending.payload.mode);
+            // Approval is a second boundary: read the current policy/trust and
+            // availability again immediately before crossing the engine wire.
+            const currentPolicyRequiresApproval = currentAgent ? mustAskBeforeActing(currentAgent) : undefined;
+            const policyAllowsApprovedAction = currentPolicyRequiresApproval !== undefined;
+            const canExecute = frame.decision === "approved" && !!target && !!currentAgent
+              && currentAgent.lifecycle !== "paused" && currentAgent.lifecycle !== "disabled"
+              && !!currentAction?.available && policyAllowsApprovedAction && this.hasEngine(approval.ownerId);
+            const receipt = this.store.recoveryReceipt(approval.ownerId, pending.requestId);
+            this.store.saveRecoveryReceipt({
+              request: pending, payloadFingerprint: recoveryRequestFingerprint(pending),
+              status: canExecute ? "accepted" : "refused",
+              ...(canExecute ? {} : { reason: frame.decision === "rejected" ? "rejected by owner" : !this.hasEngine(approval.ownerId) ? "the agent engine is not connected" : "the recovery action is no longer available" }),
+              createdAt: receipt?.createdAt ?? Date.now(),
+            });
+            if (currentDecision) {
+              this.toUser(approval.ownerId, {
+                type: "runRecovery", runId: pending.runId, decision: currentDecision,
+                requestId: pending.requestId, pending: false,
+                ...(!canExecute ? { problem: frame.decision === "rejected" ? "Recovery approval was rejected." : !this.hasEngine(approval.ownerId) ? "The agent engine is not connected. Recovery did not start." : "Recovery is no longer available." } : {}),
+              });
+            }
+            if (canExecute && target && currentAgent) {
+              // The approval is fresh, and the current action/policy is checked
+              // again immediately before the side effect crosses the engine wire.
+              this.toEngines(target.ownerId, {
+                type: "runRecoveryRequested",
+                request: { ...pending, payload: { ...pending.payload, approvalEpoch: "" } },
+              });
+            }
+          }
+        }
         // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
         //
         // A YES ON A SAVING CARD IS THE MOMENT THE SETTING CHANGES, and this is
@@ -5826,6 +7244,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
         break;
       }
       // ---- what an agent actually did (FR-TL-003) ----
+      case "threadSummaryResult":
+        this.recordThreadSummary(conn, frame.result);
+        break;
       case "runRecorded": {
         this.recordRun(conn, frame.record);
         break;
@@ -5908,6 +7329,132 @@ private viewProject(project: Project, viewerId?: ID): Project {
         // the same sentence an invented id gets, exactly as attachments do.
         if (!row || !this.canSeeRun(conn.userId, row)) throw new Error("no such run");
         send(conn.ws, { type: "run", record: shareableRun(row.record) });
+        break;
+      }
+      case "runRecovery": {
+        if (frame.mode !== "retry" && frame.mode !== "resume" && frame.mode !== "restart") {
+          throw new Error("that recovery action is not supported");
+        }
+        if (frame.requestId !== undefined && !isSafeStoredId(frame.requestId)) {
+          throw new Error("that recovery request id is not usable");
+        }
+        if (typeof frame.approvalEpoch !== "string" || frame.approvalEpoch.length > 512
+          || /[\u0000-\u001f\u007f]/.test(frame.approvalEpoch)) {
+          throw new Error("that recovery authorization is not usable");
+        }
+        const row = this.store.run(frame.runId);
+        // Recovery can create new side effects. Only the run owner may ask;
+        // room visibility alone is deliberately not enough.
+        if (!row || row.ownerId !== conn.userId || !this.canSeeRun(conn.userId, row)) {
+          throw new Error("no such run");
+        }
+        const agent = this.myAgent(conn.userId, row.agentId);
+        const checkpoint = this.store.checkpointForRun(
+          row.record.id, row.agentId, row.ownerId, frame.checkpointId);
+        const decision = recoveryDecision(row.record, checkpoint);
+        const requestId = frame.requestId ?? newId("recover");
+        // Retry/restart must retain the factual requester from the original
+        // run. A legacy or forged record without one is explicitly refused;
+        // never fill it with a synthetic chat/requester identity.
+        if (!row.record.requestedBy.trim()) {
+          throw new Error("the original recovery requester is unavailable");
+        }
+        const request: RecoveryRequest = {
+          requestId, requesterId: conn.userId, agentId: row.agentId,
+          ...(row.channelId ? { channelId: row.channelId } : {}), runId: row.record.id,
+          kind: row.record.kind,
+          ...(row.record.taskId ? { taskId: row.record.taskId } : {}),
+          ...(row.record.replyTo ? { replyTo: row.record.replyTo } : {}),
+          requesterKind: row.record.requestedByKind,
+          requestedBy: sanitizeRecoveryAsk(row.record.requestedBy),
+          payload: { mode: frame.mode, ask: sanitizeRecoveryAsk(row.record.ask), ...(checkpoint ? { checkpointId: checkpoint.id } : {}), approvalEpoch: frame.approvalEpoch },
+        };
+        const previous = this.store.recoveryReceipt(conn.userId, requestId);
+        const replay = compareRecoveryRequest(previous, request);
+        if (replay === "conflict") throw new Error("that recovery request id was already used for a different action");
+        if (replay === "replay" && previous) {
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision, requestId, pending: previous.status === "pending" });
+          break;
+        }
+        const challengeKey = this.recoveryChallengeKey(conn.userId, requestId);
+        const challenge = this.recoveryChallenges.get(challengeKey);
+        if (challenge && challenge.payloadFingerprint !== this.recoveryChallengeFingerprint(request)) {
+          throw new Error("that recovery request id was already used for a different action");
+        }
+        // A challenge proves only integrity of this exact bounded request. It
+        // never carries policy, trust or availability forward.
+        if (!frame.approvalEpoch) {
+          const challenged = { ...decision, authorizationToken: this.issueRecoveryChallenge(request) };
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: challenged, requestId });
+          break;
+        }
+        if (!this.consumeRecoveryChallenge(request)) throw new Error("that recovery authorization is invalid or expired");
+        // The token is integrity-only. Re-read ownership, trust/policy and
+        // action availability after the challenge is consumed.
+        const currentAgent = this.myAgent(conn.userId, row.agentId);
+        const currentCheckpoint = this.store.checkpointForRun(row.record.id, row.agentId, row.ownerId, frame.checkpointId);
+        const currentDecision = recoveryDecision(row.record, currentCheckpoint);
+        const currentAction = currentDecision.actions.find(a => a.mode === frame.mode);
+        const accepted = currentAgent.lifecycle !== "paused" && currentAgent.lifecycle !== "disabled"
+          && !!currentAction?.available;
+        const approvalRequired = accepted && frame.mode !== "resume" && mustAskBeforeActing(currentAgent);
+        if (!accepted) {
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "refused",
+            reason: currentAction?.reason ?? "this recovery action is unavailable", createdAt: Date.now(),
+          });
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId });
+          break;
+        }
+        if (!this.hasEngine(row.ownerId)) {
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "refused",
+            reason: "the agent engine is not connected", createdAt: Date.now(),
+          });
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId,
+            problem: "The agent engine is not connected. Recovery did not start." });
+          break;
+        }
+        if (approvalRequired) {
+          this.pendingRecovery.set(this.recoveryChallengeKey(conn.userId, requestId), request);
+          const approval: Approval = {
+            id: newId("ap"), agentId: currentAgent.id, ownerId: currentAgent.ownerId,
+            action: `${frame.mode === "retry" ? "Retry" : "Restart"} ${currentAgent.name}'s run`.slice(0, APPROVAL_LIMITS.action),
+            status: "pending", createdAt: Date.now(), kind: "action",
+            instructions: `${frame.mode === "retry" ? "Retry" : "Restart"} ${currentAgent.name}'s run`.slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+            revision: 0, approvalEpoch: newId("ae"), requesterId: currentAgent.ownerId,
+            ...(row.channelId ? { channelId: row.channelId } : {}), recoveryRequestId: requestId,
+          };
+          this.store.saveApproval(approval);
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "pending", createdAt: Date.now(),
+          });
+          this.audit(conn, "approval_requested", approval.id,
+            `${currentAgent.name} asks to recover a run`, { asAgent: currentAgent });
+          this.sendApproval(approval);
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision, requestId, pending: true });
+          break;
+        }
+        const receipt: RecoveryReceipt = {
+          request, payloadFingerprint: recoveryRequestFingerprint(request), status: "accepted", createdAt: Date.now(),
+        };
+        this.store.saveRecoveryReceipt(receipt);
+        if (accepted) this.toEngines(row.ownerId, {
+          type: "runRecoveryRequested",
+          request: { ...request, payload: { ...request.payload, approvalEpoch: "" } },
+        });
+        send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId });
+        break;
+      }
+      case "runCompare": {
+        const left = this.store.run(frame.leftRunId);
+        const right = this.store.run(frame.rightRunId);
+        const allowed = (candidate: RunRow | undefined): candidate is RunRow => !!candidate && this.canSeeRun(conn.userId, candidate);
+        const exact = compareRuns(left?.record, right?.record, record => {
+          const row = this.store.run(record.id); return allowed(row);
+        }, { left: left ? this.store.checkpointForRun(left.record.id, left.agentId, left.ownerId) : undefined,
+          right: right ? this.store.checkpointForRun(right.record.id, right.agentId, right.ownerId) : undefined });
+        send(conn.ws, { type: "runComparison", comparison: exact, requestId: frame.requestId });
         break;
       }
       // ---- agent memory: read and clear an agent's saved notes ----
@@ -6234,6 +7781,123 @@ private viewProject(project: Project, viewerId?: ID): Project {
         });
         break;
       }
+      case "agentResponse": {
+        // Response previews are a separate semantic protocol. They never share
+        // live tool-step frames, receipts, history, search, unread or storage.
+        if (conn.client !== "engine") throw new Error("only the engine can stream an agent response");
+        const event = frame.event;
+        // A size violation can arrive after a valid start.  Refuse it with a
+        // terminal projection before rejecting the frame so clients cannot be
+        // left showing an immortal spinner.  Build the lookup only from the
+        // active relay state; malformed caller fields are never projected.
+        const candidate = event as Partial<AgentResponseStreamEvent>;
+        if (candidate.kind === "response-delta" && typeof candidate.text === "string"
+          && typeof candidate.channelId === "string" && typeof candidate.triggerMessageId === "string"
+          && typeof candidate.agentId === "string" && typeof candidate.turnId === "string") {
+          const violationKey = responseStreamKey(
+            conn.userId, candidate.channelId, candidate.triggerMessageId, candidate.agentId, candidate.turnId,
+          );
+          const violationActive = this.responseStreams.get(violationKey);
+          const violationChannel = violationActive ? this.store.channel(violationActive.channelId) : undefined;
+          const tooLarge = candidate.text.length > RESPONSE_STREAM_LIMITS.deltaChars
+            || Boolean(violationActive && violationActive.totalChars + candidate.text.length > RESPONSE_STREAM_LIMITS.totalChars);
+          if (tooLarge && violationActive && violationActive.source === conn.ws && violationChannel) {
+            this.failResponseStream(violationChannel, {
+              kind: "response-delta", channelId: violationActive.channelId,
+              triggerMessageId: violationActive.triggerMessageId, agentId: violationActive.agentId,
+              turnId: violationActive.turnId, seq: violationActive.lastSeq + 1, at: Date.now(),
+            }, "response preview reached its size limit", violationKey);
+            break;
+          }
+        }
+        const bad = validateAgentResponseStream(event);
+        if (bad) throw new Error(bad);
+        const agent = this.myAgent(conn.userId, event.agentId);
+        const message = this.messageFor(conn.userId, event.triggerMessageId);
+        if (message.channelId !== event.channelId) throw new Error("no such message");
+        const ch = this.store.channel(message.channelId);
+        if (ch?.archivedAt) throw new Error("that conversation is archived — response previews are closed");
+        if (!ch || !ch.memberIds.includes(agent.id)) throw new Error("that agent is not in this conversation");
+        const slot = responseStreamSlot(conn.userId, message.channelId, message.id, agent.id);
+        const key = responseStreamKey(conn.userId, message.channelId, message.id, agent.id, event.turnId);
+        const now = Date.now();
+        let active = this.responseStreams.get(key);
+        // A second turn for the same trigger is not allowed to overwrite the
+        // first. Stale/cross-turn frames are dropped without projection.
+        const priorKey = this.responseStreamSlots.get(slot);
+        if (event.kind === "response-start") {
+          if (event.seq !== 0) throw new Error("a response stream must start at sequence zero");
+          if (this.responseStreamRecentlyEnded(key, now)) break;
+          if (priorKey && priorKey !== key) break;
+          if (active) break; // idempotent duplicate start
+          if (this.responseStreams.size >= RESPONSE_STREAM_LIMITS.maxActiveStreams) {
+            this.failResponseStream(ch, event, "too many live response previews");
+            break;
+          }
+          active = {
+            source: conn.ws,
+            ownerId: conn.userId, channelId: message.channelId,
+            triggerMessageId: message.id, agentId: agent.id, turnId: event.turnId,
+            lastSeq: 0, seenSeq: new Set([0]), totalChars: 0, eventTimes: [now],
+          };
+          active.timer = setTimeout(() => {
+            if (this.responseStreams.get(key) !== active) return;
+            this.tombstoneResponseStream(key);
+            this.responseStreams.delete(key);
+            if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+          }, RESPONSE_STREAM_LIMITS.staleMs);
+          (active.timer as unknown as { unref?: () => void }).unref?.();
+          this.responseStreams.set(key, active);
+          this.responseStreamSlots.set(slot, key);
+        } else {
+          // A second engine socket may know the same owner/turn ids, but it is
+          // not the process that opened this preview. Never let it inject a
+          // delta or terminal frame into the source-bound stream.
+          if (!active || priorKey !== key || active.source !== conn.ws) break;
+          active.eventTimes = active.eventTimes.filter(at => now - at < 1_000);
+          if (active.eventTimes.length >= RESPONSE_STREAM_LIMITS.eventsPerSecond) {
+            this.failResponseStream(ch, event, "response preview was rate-limited", key);
+            break;
+          }
+          active.eventTimes.push(now);
+          if (active.seenSeq.has(event.seq)) break; // duplicate; out-of-order is safe
+          if (event.kind === "response-delta") {
+            const chars = event.text?.length ?? 0;
+            if (chars > RESPONSE_STREAM_LIMITS.deltaChars
+              || active.totalChars + chars > RESPONSE_STREAM_LIMITS.totalChars) {
+              this.failResponseStream(ch, event, "response preview reached its size limit", key);
+              break;
+            }
+            active.totalChars += chars;
+          }
+          active.seenSeq.add(event.seq);
+          active.lastSeq = Math.max(active.lastSeq, event.seq);
+          // Activity extends the lease; a long but live answer must not be
+          // mistaken for a stale preview. The timer is still a hard backstop
+          // when the engine/socket dies silently.
+          if (active.timer) clearTimeout(active.timer);
+          active.timer = setTimeout(() => {
+            if (this.responseStreams.get(key) !== active) return;
+            this.tombstoneResponseStream(key);
+            this.responseStreams.delete(key);
+            if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+          }, RESPONSE_STREAM_LIMITS.staleMs);
+          (active.timer as unknown as { unref?: () => void }).unref?.();
+        }
+        const projected: AgentResponseStreamEvent = {
+          ...event,
+          channelId: ch.id, triggerMessageId: message.id, agentId: agent.id,
+          at: now,
+        };
+        this.toChannel(ch, { type: "agentResponse", stream: projected });
+        if (event.kind === "response-final" || event.kind === "response-cancel" || event.kind === "response-fail") {
+          if (active?.timer) clearTimeout(active.timer);
+          this.tombstoneResponseStream(key, now);
+          this.responseStreams.delete(key);
+          if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+        }
+        break;
+      }
       case "editMessage": {
         const message = this.messageFor(conn.userId, frame.messageId);
         this.writableChannel(conn.userId, message.channelId);
@@ -6273,6 +7937,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           this.store.removeAttachmentBytes(a.storedAs);
         }
         this.store.clearReactions(message.id);
+        this.store.clearMessageReceipts(message.id);
         message.text = "";
         message.mentions = [];
         message.attachments = undefined;
@@ -6330,7 +7995,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
         };
         this.store.saveAttachment(attachment, channel.id);
         // only the uploader is told — nobody else can name this id anyway
-        send(conn.ws, { type: "attachment", attachment });
+        // Echo the desktop's request identity when present. Older clients do
+        // not send one, so the optional field keeps the wire compatible while
+        // modern clients can never settle a later queued upload with a late
+        // answer from this one.
+        send(conn.ws, {
+          type: "attachment", attachment,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         break;
       }
       case "attachmentTicket": {
@@ -6475,6 +8147,27 @@ private viewProject(project: Project, viewerId?: ID): Project {
         send(conn.ws, this.artifactFrame(conn.userId, frame.artifactId, frame.requestId));
         break;
       }
+      case "richLinkPreviews": {
+        // The message id is an access proof as well as the local cache key:
+        // callers cannot resolve links copied from a room they no longer read.
+        this.messageFor(conn.userId, frame.messageId);
+        // Request ids are transport correlation only.  Never echo an
+        // unbounded or non-string value back to the socket (the runtime frame
+        // can be forged even though the TypeScript type says `ID`).  Refuse
+        // the request before projecting any target facts.
+        if (frame.requestId !== undefined && !isSafeStoredId(frame.requestId)) {
+          throw new Error("invalid request id");
+        }
+        if (!Array.isArray(frame.refs) || frame.refs.length > RICH_LINK_LIMITS.refsPerMessage) {
+          throw new Error("too many linked items");
+        }
+        send(conn.ws, {
+          type: "richLinkPreviews", messageId: frame.messageId,
+          previews: this.richLinkPreviewsFor(conn.userId, frame.refs),
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
       case "setArtifactAccess": {
         const artifact = this.artifactFor(conn.userId, frame.artifactId);
         const visible = this.channelFor(conn.userId, artifact.channelId);
@@ -6530,10 +8223,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "markRead": {
         const channel = this.channelFor(conn.userId, frame.channelId);
-        const ts = typeof frame.ts === "number" ? frame.ts : Date.now();
-        const lastReadTs = this.store.markRead(conn.userId, channel.id, ts);
+        let ts = typeof frame.ts === "number" ? frame.ts : Date.now();
+        let messageId = frame.messageId;
+        const latest = this.store.history(channel.id, {}, MESSAGE_LIMITS.page).items.at(-1);
+        if (latest && (ts > latest.ts || (ts === latest.ts && messageId !== undefined && messageId > latest.id))) {
+          // A stale/future viewport cannot mark an unseen future message read;
+          // clamp to the newest authorized message instead of trusting a clock.
+          ts = latest.ts; messageId = latest.id;
+        }
+        const lastReadTs = this.store.markRead(conn.userId, channel.id, ts, messageId);
+        const cursor = this.store.lastReadCursor(conn.userId, channel.id);
         const entry: UnreadEntry = {
-          channelId: channel.id, lastReadTs,
+          channelId: channel.id, lastReadTs, ...(cursor.id ? { lastReadId: cursor.id } : {}),
           ...this.store.unreadFor(conn.userId, channel.id, this.myIds(conn.userId)),
         };
         // EVERY machine this person is signed in on, which is the whole point
@@ -6542,6 +8243,59 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "listSaved": {
         this.tellSaved(conn.userId, frame.requestId, conn, frame);
+        break;
+      }
+      case "listChannelPins": {
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const page = this.store.channelPinsPage(channel.id, frame.limit, frame.beforePinnedAt, frame.beforeMessageId);
+        send(conn.ws, {
+          type: "channelPins", channelId: channel.id,
+          entries: page.entries.map(row => this.channelPinProjection(conn.userId, row)),
+          revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+          ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+          ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "pinMessage": {
+        // Authenticate the room and source BEFORE consulting the retry ledger.
+        // A stale receipt must never become a side channel after membership or
+        // channel kind changes.
+        const channel = this.adminChannel(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.channelId !== channel.id) throw new Error("that message is not in this channel");
+        const status = frame.requestId
+          ? this.store.channelPinMutationStatus(conn.userId, frame.requestId, "pinMessage", channel.id, message.id)
+          : undefined;
+        if (status === "conflict") throw new Error("that channel pin request id was already used for a different pin");
+        if (status === "replay") {
+          this.tellChannelPins(channel, frame.requestId, conn);
+          break;
+        }
+        if (channel.archivedAt) throw new Error("that conversation is archived");
+        if (message.deletedAt) throw new Error("that message was deleted");
+        this.store.pinChannelMessage(conn.userId, channel.id, message.id, frame.requestId);
+        this.tellChannelPins(channel, frame.requestId, conn);
+        break;
+      }
+      case "unpinMessage": {
+        const channel = this.adminChannel(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.channelId !== channel.id) throw new Error("that message is not in this channel");
+        const status = frame.requestId
+          ? this.store.channelPinMutationStatus(conn.userId, frame.requestId, "unpinMessage", channel.id, message.id)
+          : undefined;
+        if (status === "conflict") throw new Error("that channel pin request id was already used for a different removal");
+        if (status === "replay") {
+          this.tellChannelPins(channel, frame.requestId, conn);
+          break;
+        }
+        this.store.unpinChannelMessage(conn.userId, channel.id, message.id, frame.requestId);
+        this.tellChannelPins(channel, frame.requestId, conn);
         break;
       }
       case "saveMessage": {
@@ -6655,7 +8409,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private recordRun(conn: Conn, record: RunRecord): void {
     if (conn.client !== "engine") throw new Error("only the engine reports what an agent did");
     const bad = validateRunRecord(record);
-    if (bad) throw new Error(bad);
+    if (bad && record.invocation) {
+      // Preserve the run audit while dropping only an unverifiable invocation
+      // receipt. A forged receipt must never reach the durable row or a guest
+      // projection, but it also must not erase evidence that the turn ended.
+      const { invocation: _discarded, ...withoutInvocation } = record;
+      record = {
+        ...withoutInvocation,
+        error: withoutInvocation.error ?? "invocation receipt was refused before persistence",
+      };
+    }
+    const stillBad = validateRunRecord(record);
+    if (stillBad) throw new Error(stillBad);
     // WHOSE AGENT — stored state, never the record. This one line is what stops
     // an engine host reporting runs against another person's agent and, through
     // that, planting a readable record in a room it was never in.
@@ -6696,6 +8461,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // saveRun prunes in the same call, so "bounded" isn't something a caller
     // has to remember
     this.store.saveRun(row);
+    // Checkpoint only the public facts we observed. Session ids are retained
+    // as capability metadata, never as an assertion that arbitrary provider
+    // state can be resumed.
+    this.store.saveCheckpoint(buildRunCheckpoint(cleaned, {
+      branch: cleaned.branch, commit: cleaned.commit, files: cleaned.files,
+      artifacts: cleaned.artifacts,
+      priorRunId: cleaned.priorRunId,
+      providerSession: cleaned.sessionId ? {
+        provider: cleaned.provider, sessionId: cleaned.sessionId, canResume: false,
+        actionSemantics: "unknown", reason: "the provider did not report a safe recovery capability",
+      } : undefined,
+    }), { agentId: agent.id, ownerId: agent.ownerId, ...(channelId ? { channelId } : {}) });
 
     // THE ROW THE ACTIVITY PANEL WAS ALWAYS MISSING. Until now the trail could
     // say an agent spoke; it could not say what the agent did to be able to.
@@ -6734,15 +8511,105 @@ private viewProject(project: Project, viewerId?: ID): Project {
   /** Push a finished run to everyone who could see the conversation it was in. */
   private tellAboutRun(row: RunRow): void {
     const frame: ServerFrame = { type: "run", record: row.record };
+    const recovery: ServerFrame = {
+      type: "runRecovery", runId: row.record.id,
+      decision: recoveryDecision(row.record,
+        this.store.checkpointForRun(row.record.id, row.agentId, row.ownerId)),
+    };
     const channel = row.channelId ? this.store.channel(row.channelId) : undefined;
-    if (!channel) { this.toUser(row.ownerId, frame); return; }
+    if (!channel) {
+      this.toUser(row.ownerId, frame);
+      this.toUser(row.ownerId, recovery);
+      return;
+    }
     const audience = this.audienceFor(channel);
     // the owner hears about their own agent's work even if they have since
     // left the room it happened in
     audience.add(row.ownerId);
     for (const conn of this.conns) {
-      if (audience.has(conn.userId)) send(conn.ws, frame);
+      if (!audience.has(conn.userId)) continue;
+      send(conn.ws, frame);
+      // Recovery mutates the owner's agent and is never offered to room guests.
+      if (conn.userId === row.ownerId) send(conn.ws, recovery);
     }
+  }
+
+  private recoveryChallengeKey(requesterId: ID, requestId: ID): string {
+    return `${requesterId}:${requestId}`;
+  }
+
+  /**
+   * The approval card is durable, but the in-memory execution handoff is not.
+   * On a relay restart, never leave an approved card suggesting that a retry
+   * ran. Settle every recovery card and its receipt as a durable refusal; the
+   * owner can explicitly start a fresh challenge afterwards.
+   */
+  private settleInterruptedRecoveryApprovals(): Approval[] {
+    const settled: Approval[] = [];
+    const now = Date.now();
+    for (const approval of this.store.approvals(1000)) {
+      if (!approval.recoveryRequestId || (approval.status !== "pending" && approval.status !== "approved")) continue;
+      const receipt = this.store.recoveryReceipt(approval.ownerId, approval.recoveryRequestId);
+      // Approval rows and receipts are written separately. If the process
+      // stopped between those writes, there is no request payload from which
+      // to reconstruct an engine frame; still settle the approval durably so
+      // it cannot remain an apparently actionable card forever.
+      approval.status = "expired";
+      approval.decidedAt = now;
+      if (!receipt) approval.detail = "Cloud9 restarted before recovery could be reconstructed";
+      this.store.saveApproval(approval);
+      if (receipt && (receipt.status === "pending" || receipt.status === "accepted")) {
+        this.store.saveRecoveryReceipt({
+          request: receipt.request, payloadFingerprint: recoveryRequestFingerprint(receipt.request),
+          status: "refused", reason: "Cloud9 restarted before recovery could be executed", createdAt: receipt.createdAt,
+        });
+      }
+      settled.push(approval);
+    }
+    return settled;
+  }
+
+  private recoveryChallengeFingerprint(request: RecoveryRequest): string {
+    return recoveryRequestFingerprint({
+      ...request, payload: { ...request.payload, approvalEpoch: "" },
+    });
+  }
+
+  private pruneRecoveryChallenges(now = Date.now()): void {
+    for (const [key, challenge] of this.recoveryChallenges) {
+      if (challenge.createdAt < now - RECOVERY_CHALLENGE_TTL_MS) this.recoveryChallenges.delete(key);
+    }
+    const overflow = [...this.recoveryChallenges.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(RECOVERY_CHALLENGE_LIMIT);
+    for (const challenge of overflow) {
+      this.recoveryChallenges.delete(this.recoveryChallengeKey(challenge.requesterId, challenge.requestId));
+    }
+  }
+
+  private issueRecoveryChallenge(request: RecoveryRequest): string {
+    const now = Date.now();
+    this.pruneRecoveryChallenges(now);
+    const key = this.recoveryChallengeKey(request.requesterId, request.requestId);
+    const prior = this.recoveryChallenges.get(key);
+    if (prior && prior.payloadFingerprint === this.recoveryChallengeFingerprint(request)) return prior.token;
+    const token = secureId("recovery");
+    this.recoveryChallenges.set(key, {
+      token, requesterId: request.requesterId, requestId: request.requestId,
+      payloadFingerprint: this.recoveryChallengeFingerprint(request), createdAt: now,
+    });
+    this.pruneRecoveryChallenges(now);
+    return token;
+  }
+
+  private consumeRecoveryChallenge(request: RecoveryRequest): boolean {
+    const key = this.recoveryChallengeKey(request.requesterId, request.requestId);
+    const challenge = this.recoveryChallenges.get(key);
+    if (!challenge || challenge.createdAt < Date.now() - RECOVERY_CHALLENGE_TTL_MS) return false;
+    if (challenge.payloadFingerprint !== this.recoveryChallengeFingerprint(request)
+      || challenge.token !== request.payload.approvalEpoch) return false;
+    this.recoveryChallenges.delete(key);
+    return true;
   }
 
   /**
@@ -6843,7 +8710,37 @@ private viewProject(project: Project, viewerId?: ID): Project {
     return [...this.store.users(), ...this.store.agents()].map(x => ({ id: x.id, name: x.name }));
   }
 
-  private postMessage(message: Message, tempId?: string): void {
+  /** Validate and canonicalize optional per-message agent controls. */
+  private invocationFor(
+    conn: Conn, channel: Channel, text: string, request?: AgentInvocationRequest,
+  ): AgentInvocationRequest | undefined {
+    if (!request) return undefined;
+    const agent = this.store.agents().find(candidate => candidate.id === request.agentId);
+    if (!agent || !channel.memberIds.includes(agent.id)) {
+      throw new Error("that agent is not in this conversation");
+    }
+    if (!mayDriveAgent(conn.userId, agent)) {
+      throw new Error("you may not invoke that agent");
+    }
+    const roomAgents = this.store.agents().filter(candidate => channel.memberIds.includes(candidate.id));
+    const target = invocationTargetFor(text, roomAgents);
+    if (target !== agent.id) {
+      throw new Error(target
+        ? "choose invocation controls for the one agent named in this message"
+        : "mention exactly one unambiguous agent before choosing invocation controls");
+    }
+    const provider = agent.provider === "codex" ? "codex" : "claude";
+    const models = this.harness[agent.ownerId]?.[provider].models;
+    const problem = validateAgentInvocation(agent, request, models);
+    if (problem) throw new Error(problem);
+    // Do not persist arbitrary client keys. Only canonical public metadata
+    // crosses to the engine and into the durable message row.
+    return canonicalizeAgentInvocation(request)!;
+  }
+
+  private postMessage(message: Message, tempId?: string, requestId?: ID, draftOwnerId?: ID,
+    draftThreadId?: ID, attachmentIds?: readonly ID[], clientMessageId?: ID,
+    payloadHash?: string): { message: Message; replayed: boolean; draftRemoved: boolean } {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
     // Capture the thread as it stood BEFORE this reply landed. That timing is
@@ -6852,13 +8749,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const priorReplies = message.replyTo
       ? this.store.thread(message.replyTo).filter(m => m.id !== message.id)
       : [];
-    this.store.saveMessage(message);
+    const saved = draftOwnerId
+      ? this.store.saveMessageAndRemoveDraft(message, draftOwnerId, draftThreadId,
+        attachmentIds, clientMessageId, payloadHash)
+      : (this.store.saveMessage(message), { message, replayed: false, draftRemoved: false });
+    if (saved.replayed) return saved;
+    message = saved.message;
     this.recordMessageNotifications(ch, message, priorReplies);
     // A reply bumps the CACHED count on the message that started the thread, and
     // everyone watching is told the root changed — otherwise "12 replies" would
     // only appear after a reload.
     if (message.replyTo) {
-      const root = this.store.bumpReplyCount(message.replyTo, message.ts, message.authorId);
+      const root = this.store.bumpReplyCount(message.replyTo, message.ts, message.authorId, message.id);
       if (root) this.broadcastMessageUpdate(root);
     }
     if (message.authorKind === "agent") {
@@ -6871,11 +8773,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const memberUserIds = this.audienceFor(ch);
     for (const conn of this.conns) {
       if (!memberUserIds.has(conn.userId)) continue;
-      send(conn.ws, { type: "message", message, tempId });
+      send(conn.ws, { type: "message", message, tempId, ...(conn.userId === message.authorId && requestId ? { requestId } : {}) });
       // proactive agent messages become notifications on mobile clients
       if (message.proactive && conn.client === "mobile") {
         send(conn.ws, { type: "push", message });
       }
+    }
+    if (message.authorKind === "human") this.pushMessageStatus(message.authorId, message);
+    if (draftOwnerId && saved.draftRemoved) {
+      this.toUser(draftOwnerId, {
+        type: "draftRemoved", channelId: message.channelId,
+        ...(draftThreadId ? { threadId: draftThreadId } : {}),
+      });
     }
     // push log for offline members (APNs delivery later)
     if (message.proactive) {
@@ -6884,29 +8793,42 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!online.has(uid)) this.store.logPush(uid, message.id);
       }
     }
+    return saved;
   }
 
   private broadcast(frame: ServerFrame): void {
     for (const conn of this.conns) send(conn.ws, frame);
   }
 
-  private publishTask(task: Task): void {
-    if (!task.workflowRunId) {
-      this.broadcast({ type: "task", task });
-      return;
-    }
-    const channel = this.store.channel(task.channelId);
-    const agents = this.store.agents();
-    const audience = new Set<ID>();
-    for (const memberId of channel?.memberIds ?? []) {
-      const memberAgent = agents.find(agent => agent.id === memberId);
-      audience.add(memberAgent?.ownerId ?? memberId);
-    }
-    const taskAgent = agents.find(agent => agent.id === task.agentId);
-    if (taskAgent) audience.add(taskAgent.ownerId);
+  private publishTask(task: Task, requestId?: ID, origin?: Conn): void {
+    const correlated = Boolean(requestId && origin);
+    const audience = this.taskAudience(task);
+    let originDelivered = false;
     for (const conn of this.conns) {
-      if (audience.has(conn.userId)) send(conn.ws, { type: "task", task });
+      if (!audience.has(conn.userId) || (correlated && conn === origin)) continue;
+      if (conn === origin) originDelivered = true;
+      send(conn.ws, { type: "task", task });
     }
+    // Correlation is only returned to a currently authorized origin. This is
+    // deliberately not a transport acknowledgement for a requester who has
+    // since left the room or lost drive access.
+    if (correlated && audience.has(origin!.userId)) {
+      send(origin!.ws, { type: "task", task, requestId: requestId! });
+    }
+    // Legacy engine frames carry no request id. They still need the ordinary
+    // task push on the originating engine socket so it can claim/run work.
+    if (origin && !requestId && audience.has(origin.userId) && !originDelivered) {
+      send(origin.ws, { type: "task", task });
+    }
+  }
+
+  private taskAudience(task: Task): Set<ID> {
+    const audience = new Set<ID>([task.requesterId]);
+    const agent = this.store.agents().find(candidate => candidate.id === task.agentId);
+    if (agent) audience.add(agent.ownerId);
+    const channel = this.store.channel(task.channelId);
+    if (channel) for (const userId of this.audienceFor(channel)) audience.add(userId);
+    return audience;
   }
 
   /**
@@ -6924,11 +8846,29 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const conn of this.conns) {
       if (audience.has(conn.userId)) send(conn.ws, { type: "channel", channel });
     }
+    this.broadcastChannelMemoryPolicies(channel);
     // Channel membership is also the access boundary for linked Canvases.
     // Re-project them after every add/join/remove/leave broadcast so a window
     // never keeps an old list after its room visibility changes.
     for (const project of this.store.projectsAll()) {
       if (project.channelId === channel.id) this.pushCanvasProject(project);
+    }
+  }
+
+  private broadcastChannelMemoryPolicies(channel: Channel): void {
+    const policies = this.store.channelMemoryPolicies(channel.id);
+    this.toChannel(channel, { type: "channelMemoryPolicies", channelId: channel.id, policies });
+  }
+
+  /** Membership roles are UI permissions too, so every open member view must
+   * receive the authoritative rows when an owner changes somebody's role. */
+  private broadcastChannelMembers(channelId: ID): void {
+    const channel = this.store.channel(channelId);
+    if (!channel) return;
+    const members = this.store.channelMembers(channelId);
+    const audience = this.audienceFor(channel);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "channelMembers", channelId, members });
     }
   }
 
@@ -6968,15 +8908,19 @@ private viewProject(project: Project, viewerId?: ID): Project {
    * his phone and the engine that asked, all at once.
    */
   private sendApproval(approval: Approval): void {
-    if (this.isWorkflowApproval(approval)) {
-      const audience = this.workflowApprovalAudience(approval);
-      for (const conn of this.conns) {
-        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
-      }
-      return;
+    const audience = new Set<ID>();
+    if (approval.channelId) {
+      const channel = this.store.channel(approval.channelId);
+      if (channel) for (const userId of this.audienceFor(channel)) audience.add(userId);
     }
-    if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
-    else this.broadcast({ type: "approval", approval });
+    // Cards without a room are private to the owner/requester. The owner is
+    // always retained for a room card too, so a later membership change cannot
+    // strand the person who must answer it.
+    audience.add(approval.ownerId);
+    if (approval.requesterId && !approval.channelId) audience.add(approval.requesterId);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
+    }
   }
 
   // NOTHING KILLS A CARD ANY MORE (2026-08-07). There used to be a sweep here
@@ -6986,28 +8930,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
   // (@cloud9/shared, `ApprovalStatus`), but nothing produces a new one, and a
   // card only stops being pending because HE decided or he pressed Stop.
 
-  /** Saved runbook approvals follow the task's room, plus the owner who decides. */
-  private isWorkflowApproval(approval: Approval): boolean {
-    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
-    return Boolean(task?.workflowRunId);
-  }
-
-  private workflowApprovalAudience(approval: Approval): Set<ID> {
-    const audience = new Set<ID>([approval.ownerId]);
-    const channel = approval.channelId ? this.store.channel(approval.channelId) : undefined;
-    const agents = this.store.agents();
-    for (const memberId of channel?.memberIds ?? []) {
-      const memberAgent = agents.find(agent => agent.id === memberId);
-      audience.add(memberAgent?.ownerId ?? memberId);
-    }
-    return audience;
-  }
-
   /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    return this.store.approvals().filter(a => this.isWorkflowApproval(a)
-      ? this.workflowApprovalAudience(a).has(userId)
-      : a.kind !== "action" || a.ownerId === userId);
+    return this.store.approvals().filter(approval => {
+      if (approval.ownerId === userId) return true;
+      if (!approval.channelId) return approval.requesterId === userId;
+      const channel = this.store.channel(approval.channelId);
+      return !!channel && this.audienceFor(channel).has(userId);
+    });
   }
 
   /** Send to one user's engine host connection(s) only. */
@@ -7051,6 +8981,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
  * requests would go down with it. One rule, one place.
  */
 export { isBranchName as isSafeBranchName } from "@cloud9/shared";
+
+const TASK_TITLE_LIMIT = 4000;
+
+function validateTaskTitle(title: unknown): string | null {
+  if (typeof title !== "string" || title.trim().length === 0) return "a task needs some words";
+  if (title.length > TASK_TITLE_LIMIT) return `that task title is too long (max ${TASK_TITLE_LIMIT} characters)`;
+  return null;
+}
 
 /**
  * Does this task need the owner to say yes first?

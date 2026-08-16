@@ -150,6 +150,9 @@ test("inaccessible linked records are redacted per reader without leaking the id
   const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Task bot");
   owner.send({ type: "createChannel", name: "private-task", memberIds: [] });
   const privateChannel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(f => f.type === "channel" && f.channel.name === "private-task");
+  owner.send({ type: "addMembers", channelId: privateChannel.channel.id, memberIds: [agent.agent.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === privateChannel.channel.id && f.channel.memberIds.includes(agent.agent.id));
   owner.send({ type: "createTask", agentId: agent.agent.id, channelId: privateChannel.channel.id, title: "Owner-only task" });
   const task = await owner.wait<Extract<ServerFrame, { type: "task" }>>(f => f.type === "task" && f.task.title === "Owner-only task");
   owner.send({ type: "createCanvas", projectId, title: "Links" });

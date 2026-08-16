@@ -8,7 +8,11 @@ import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Approval, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
   Channel, ClientFrame, HarnessName, HarnessState, ID,
+  ChannelMemoryPolicy, ChannelMemoryMode, defaultChannelMemoryMode,
+  channelMemoryMaySave, channelMemoryMayUse,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
+  AgentInvocationReceipt, agentForInvocation, invocationTargetFor, validateAgentInvocation,
+  validateAgentInvocationReceipt, validateRunRecord,
   Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
@@ -21,6 +25,9 @@ import {
   // engine, the hub and the window cannot end up with three opinions about the
   // same money.
   humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
+  RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind, RecoveryRequest,
+  parseComposerCommand, ThreadSummaryRequest, ThreadSummaryResult,
+  validateThreadSummaryResult, THREAD_SUMMARY_LIMITS,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -45,8 +52,9 @@ import { ApprovalDesk, ApprovalOutcome, ApprovalWaitChange } from "./approvaldes
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
-  ClaudeProvider, HarnessUnavailableError, InstructionsNotSavedError, MockProvider,
-  PlanNotOfferedError, redactForSharing, sanitizeForChat, SpendCapReachedError, ThreadContinuity,
+  ClaudeProvider, HarnessReadiness, HarnessUnavailableError, InstructionsNotSavedError,
+  MockProvider, PlanNotOfferedError, redactForSharing, sanitizeForChat, SpendCapReachedError,
+  ThreadContinuity,
 } from "./provider.js";
 import { sessionKeyId } from "./sessionresume.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
@@ -60,7 +68,7 @@ import { verifyTurn } from "./verify.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace, Worktree } from "./worktree.js";
 import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
-import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
+import { buildRunRecord, newRunId, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import {
   MemoryStore, MemoryKind, MemoryNote, MEMORY_NOTES_PER_TURN, newMemoryId,
@@ -111,6 +119,12 @@ export class TurnStoppedError extends Error {
  */
 function saidWhenTurnEnded(err: unknown, where: string): string {
   return err instanceof TurnStoppedError ? err.said : sanitizeForChat(err, where);
+}
+
+/** The button sends a stable agent id, never a display-name mention. */
+function directStopAgentId(text: string): ID | undefined {
+  const match = /^!stop\s+(\S+)\s*$/i.exec(text.trim());
+  return match?.[1];
 }
 
 export interface EngineOptions {
@@ -246,6 +260,16 @@ export interface TurnInput {
    * a plan rather than as the job.
    */
   planOnly?: boolean;
+  /** A review turn is explicitly read-only and cannot publish or edit. */
+  reviewOnly?: boolean;
+  /** Public link back to a failed/cancelled/refused run being recovered. */
+  priorRunId?: ID;
+  /** Validated per-message controls, carried into the public run receipt. */
+  invocation?: AgentInvocationReceipt;
+  /** Explicit summary request; providers must return the bounded JSON shape. */
+  summaryOnly?: boolean;
+  summaryRequestId?: ID;
+  summaryRequesterId?: ID;
 }
 
 export class Engine {
@@ -382,6 +406,15 @@ export class Engine {
    * not get a turn, so an unknown id can never reach a command line.
    */
   harnessModels?: (harness: HarnessName) => string[];
+  /**
+   * WHAT THIS COMPUTER WAS FOUND TO HAVE, supplied by the same host and from
+   * the same live detection as `harnessModels`. Used for one thing only: when a
+   * turn is refused because no harness is attached, the agent's reply names the
+   * real situation instead of always saying "open Settings and sign in".
+   * Absent means nobody looked, and the generic sentence is used — see
+   * `harnessDisconnectedReply` in `provider.ts`.
+   */
+  harnessReadiness?: (harness: HarnessName) => HarnessReadiness | undefined;
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
@@ -572,6 +605,9 @@ export class Engine {
         this.pushHistory(frame.message);
         void this.considerReplies(frame.message);
         break;
+      case "threadSummaryRequest":
+        void this.handleThreadSummaryRequest(frame.request);
+        break;
       case "channel": {
         if (!this.state) break;
         const i = this.state.channels.findIndex(c => c.id === frame.channel.id);
@@ -579,6 +615,31 @@ export class Engine {
         else this.state.channels.push(frame.channel);
         break;
       }
+      case "channelMemoryPolicies":
+        if (this.state) {
+          this.state.channelMemoryPolicies = [
+            ...(this.state.channelMemoryPolicies ?? []).filter(policy => policy.channelId !== frame.channelId),
+            ...frame.policies,
+          ];
+        }
+        break;
+      case "channelMemoryPolicy":
+        if (this.state) {
+          this.state.channelMemoryPolicies = [
+            ...(this.state.channelMemoryPolicies ?? []).filter(policy =>
+              policy.channelId !== frame.policy.channelId || policy.agentId !== frame.policy.agentId),
+            frame.policy,
+          ];
+        }
+        break;
+      case "channelLeft":
+        if (this.state) {
+          this.state.channels = this.state.channels.filter(channel => channel.id !== frame.channelId);
+          this.state.channelMemoryPolicies = (this.state.channelMemoryPolicies ?? [])
+            .filter(policy => policy.channelId !== frame.channelId);
+        }
+        this.history.delete(frame.channelId);
+        break;
       case "agent": {
         if (!this.state) break;
         const i = this.state.agents.findIndex(a => a.id === frame.agent.id);
@@ -684,8 +745,150 @@ export class Engine {
       case "handoffReceived":
         void this.receiveHandoff(frame.handoff);
         break;
+      case "runRecoveryRequested":
+        void this.handleRecoveryRequest(frame.request);
+        break;
       default:
         break;
+    }
+  }
+
+  /** Run one explicit summary request; never turns ordinary chat into a card. */
+  private async handleThreadSummaryRequest(request: ThreadSummaryRequest): Promise<void> {
+    const channel = this.channel(request.channelId);
+    const source = this.history.get(request.channelId)?.find(m => m.id === request.sourceMessageId);
+    const agent = this.myAgents.find(a => a.id === request.agentId
+      && !!channel?.memberIds.includes(a.id)
+      && a.lifecycle !== "paused" && a.lifecycle !== "disabled");
+    if (!channel || !source || source.id !== request.threadId || !agent) {
+      this.sendThreadSummaryResult(request, "unavailable", undefined, undefined,
+        "that thread or agent is no longer available");
+      return;
+    }
+    const requester = this.state?.users.find(user => user.id === request.requesterId);
+    const input: TurnInput = {
+      // A summary is deliberately narrower than an ordinary reply. The
+      // selected root and its direct replies are the complete provider input;
+      // unrelated room chatter must not become hidden summary context.
+      context: this.renderThreadContext(channel.id, agent, request.threadId),
+      trigger: "Summarize this thread into decisions, open questions, and next actions.",
+      triggerAuthor: requester?.name ?? "the requester",
+      kind: "chat", channelId: channel.id, requesterKind: "human",
+      replyTo: request.threadId, triggerMessageId: request.sourceMessageId,
+      reviewOnly: true, summaryOnly: true, summaryRequestId: request.requestId,
+      summaryRequesterId: request.requesterId,
+    };
+    try {
+      await this.respondAs(agent, input);
+    } catch {
+      // respondAs has already emitted the refused/unavailable terminal card.
+    }
+  }
+
+  private renderThreadContext(
+    channelId: ID, agent: Pick<AgentDef, "model" | "provider">, threadId: ID,
+  ): string {
+    const messages = (this.history.get(channelId) ?? [])
+      .filter(message => message.id === threadId || message.replyTo === threadId);
+    return renderConversation(messages, this.contextBudgetFor(agent));
+  }
+
+  private threadSummarySources(channelId: ID, threadId: ID): { messageId: ID; label: string }[] {
+    return (this.history.get(channelId) ?? [])
+      .filter(message => message.id === threadId || message.replyTo === threadId)
+      .slice(0, THREAD_SUMMARY_LIMITS.sourceCount)
+      .map(message => ({
+        messageId: message.id,
+        label: redactForSharing(`${message.authorName}: ${message.text}`, THREAD_SUMMARY_LIMITS.sourceLabel),
+      }));
+  }
+
+  private parseThreadSummary(text: string): Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions"> | undefined {
+    if (typeof text !== "string" || !text.trim() || text.trim().startsWith("```")) return undefined;
+    try {
+      const raw = JSON.parse(text) as Record<string, unknown>;
+      const lists = ["decisions", "openQuestions", "nextActions"] as const;
+      if (Object.keys(raw).some(key => !lists.includes(key as typeof lists[number]))) return undefined;
+      const values = Object.fromEntries(lists.map(key => {
+        const value = raw[key];
+        return [key, Array.isArray(value) ? value.filter(item => typeof item === "string").slice(0, THREAD_SUMMARY_LIMITS.itemCount) : []];
+      })) as Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions">;
+      if (lists.some(key => !Array.isArray(raw[key])
+        || (raw[key] as unknown[]).some(item => typeof item !== "string"))) return undefined;
+      return values;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private sendThreadSummaryResult(
+    request: ThreadSummaryRequest, status: ThreadSummaryResult["status"],
+    facts?: Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions">,
+    runId?: ID, error?: string,
+  ): void {
+    const ready = status === "ready" && facts;
+    const result: ThreadSummaryResult = {
+      ...request, status, updatedAt: Date.now(),
+      decisions: ready ? facts.decisions : [], openQuestions: ready ? facts.openQuestions : [],
+      nextActions: ready ? facts.nextActions : [],
+      sources: ready ? this.threadSummarySources(request.channelId, request.threadId) : [],
+      ...(runId ? { runId } : {}), ...(error ? { error: redactForSharing(error, THREAD_SUMMARY_LIMITS.error) } : {}),
+    };
+    const bad = validateThreadSummaryResult(result);
+    if (bad) {
+      console.error(`[engine] refusing malformed thread summary result: ${bad}`);
+      return;
+    }
+    try { this.sendFrame({ type: "threadSummaryResult", result }); }
+    catch (err) { console.error("[engine] could not send thread summary:", err); }
+  }
+
+  /**
+   * Recovery is always a new turn. The old approval desk is not consulted and
+   * no provider state is reconstructed here: policy, permissions and spending
+   * are re-evaluated by respondAs at action time. Resume remains unavailable
+   * unless a provider implements a real session continuation contract.
+   */
+  private async handleRecoveryRequest(request: RecoveryRequest): Promise<void> {
+    if (request.payload.mode !== "retry" && request.payload.mode !== "resume" && request.payload.mode !== "restart") {
+      console.warn(`[engine] recovery ${request.runId} has an unsupported action; no turn started`);
+      return;
+    }
+    if (request.payload.mode === "resume") {
+      console.warn(`[engine] resume requested for ${request.runId}, but provider resume is not implemented; no turn started`);
+      return;
+    }
+    const agent = this.myAgents.find(a => a.id === request.agentId);
+    if (!agent) return;
+    // Recovery must carry the factual shape of the original turn. A legacy
+    // receipt without that context is refused rather than silently becoming a
+    // chat turn in an invented room.
+    if ((request.kind !== "chat" && request.kind !== "task" && request.kind !== "schedule")
+      || (request.requesterKind !== "human" && request.requesterKind !== "agent" && request.requesterKind !== "schedule")
+      || request.requestedBy === undefined
+      || !request.requestedBy.trim()) {
+      console.warn(`[engine] recovery ${request.runId} has no original turn context; no turn started`);
+      return;
+    }
+    if (request.kind === "task" && (!request.taskId || !request.channelId)) {
+      console.warn(`[engine] recovery ${request.runId} has no task room/context; no turn started`);
+      return;
+    }
+    const channelId = request.channelId;
+    const context = channelId ? this.renderContext(channelId, agent, request.replyTo) : "";
+    const trigger = request.payload.mode === "restart"
+      ? `${request.payload.ask} (restart with context from run ${request.runId})`
+      : request.payload.ask;
+    try {
+      await this.respondAs(agent, {
+        context, trigger, triggerAuthor: request.requestedBy, kind: request.kind,
+        ...(channelId ? { channelId } : {}), ...(request.taskId ? { taskId: request.taskId } : {}),
+        requesterKind: request.requesterKind,
+        ...(request.replyTo ? { replyTo: request.replyTo } : {}),
+        priorRunId: request.runId,
+      });
+    } catch (error) {
+      console.error(`[engine] recovery turn ${request.runId} did not finish:`, error);
     }
   }
 
@@ -716,6 +919,25 @@ export class Engine {
     return this.state?.channels.find(c => c.id === id);
   }
 
+  /** Effective policy from the relay snapshot; absent rows use the documented default. */
+  private channelMemoryPolicy(channelId: ID, agentId: ID): ChannelMemoryPolicy | undefined {
+    const found = this.state?.channelMemoryPolicies?.find(policy =>
+      policy.channelId === channelId && policy.agentId === agentId);
+    if (found) return found;
+    const channel = this.channel(channelId);
+    // No fabricated default: an unknown channel, or an agent that is not a
+    // live member of it, is outside the policy boundary. Callers that are
+    // about to persist a channel-scoped note must refuse before touching the
+    // memory store.
+    if (!channel || !channel.memberIds.includes(agentId)) return undefined;
+    return {
+      channelId, agentId,
+      mode: defaultChannelMemoryMode(channel?.kind ?? "channel"), revision: 0,
+      updatedAt: channel?.createdAt ?? 0,
+      updatedBy: this.state?.me.id ?? "system", isDefault: true,
+    };
+  }
+
   private async considerReplies(message: Message): Promise<void> {
     if (!this.state) return;
     const channel = this.channel(message.channelId);
@@ -732,10 +954,63 @@ export class Engine {
     // receives it through the delivered handoff, not by replying to the command.
     const handoffCmd = message.authorKind === "human"
       ? parseHandoffCommand(message.text) : undefined;
+    const composerCommand = message.authorKind === "human"
+      ? parseComposerCommand(message.text, {
+        agentNames: channelAgents.map(a => a.name),
+        agentIds: channelAgents.map(a => a.id),
+      }) : undefined;
+    // Slash commands can target a stable agent id (`@a-data`) even though the
+    // relay's ordinary mention extractor only recognises display names. Resolve
+    // that target here so command routing does not fall through to persona
+    // relevance (or silently disappear) before the normal permission gate.
+    const commandTargetToken = composerCommand
+      ? (composerCommand.name === "assign" ? composerCommand.target : composerCommand.routeTarget)
+      : undefined;
+    const commandTargetMatches = commandTargetToken
+      ? channelAgents.filter(a => a.id.toLocaleLowerCase() === commandTargetToken.toLocaleLowerCase()
+        || a.name.toLocaleLowerCase() === commandTargetToken.toLocaleLowerCase())
+      : [];
+    const commandTarget = commandTargetMatches.length === 1 ? commandTargetMatches[0] : undefined;
+    const commandHasExplicitTarget = composerCommand !== undefined && commandTargetToken !== undefined;
+    const commandRefusalAgent = this.myAgents.find(a =>
+      channelAgents.some(roomAgent => roomAgent.id === a.id)
+      && a.lifecycle !== "paused" && a.lifecycle !== "disabled"
+      && mayDriveAgent(message.authorId, a));
+    const invocationTarget = message.invocation
+      ? invocationTargetFor(message.text, channelAgents)
+      : undefined;
+    if (message.invocation && invocationTarget !== message.invocation.agentId) {
+      const refusalAgent = this.myAgents.find(a => a.id === message.invocation!.agentId);
+      if (refusalAgent) {
+        this.refuseInvocation(refusalAgent, channel.id, message,
+          invocationTarget
+            ? "choose invocation controls for the one agent named in this message"
+            : "the message must name exactly one unambiguous agent");
+      }
+      return;
+    }
 
     if (message.authorKind === "human" && isBrakedReset(history)) {
       // a human spoke — lift any brake status display
       for (const a of this.myAgents) this.setStatus(a.id, "idle");
+    }
+    /* The desktop button sends a stable agent id, never a display-name
+       mention. Names may contain spaces or emoji; ids are the exact routing
+       key. Keep normal permission, channel, lifecycle, and local-owner gates. */
+    const directStopId = message.authorKind === "human"
+      ? directStopAgentId(message.text) : undefined;
+    if (directStopId) {
+      const target = this.myAgents.find(agent => agent.id === directStopId
+        && channel.memberIds.includes(agent.id)
+        && agent.lifecycle !== "paused" && agent.lifecycle !== "disabled"
+        && mayDriveAgent(message.authorId, agent));
+      if (!target) return;
+      const stopped = this.stopAgent(target.id);
+      this.agentSend(target.id, channel.id, stopped > 0
+        ? `🛑 Stopping — pulling the plug on what I'm doing now.`
+        : `There was nothing running to stop — I'm not working on anything right now.`,
+        { ...(thread ? { replyTo: thread } : {}) });
+      return;
     }
     if (isBraked(history, this.brake)) {
       for (const a of this.myAgents.filter(a => channel.memberIds.includes(a.id))) {
@@ -744,8 +1019,34 @@ export class Engine {
       return;
     }
 
+    // An explicit route that did not resolve to exactly one live room agent is
+    // still a command, not ordinary prose. Say so once from a local eligible
+    // agent; otherwise a duplicate name or outsider id could fall through to
+    // persona relevance and accidentally start a different provider turn.
+    if (commandHasExplicitTarget && !commandTarget) {
+      if (commandRefusalAgent) {
+        this.agentSend(commandRefusalAgent.id, channel.id,
+          `I could not route that command because @${commandTargetToken} `
+          + "is not an agent in this room, or its name is ambiguous.",
+          { ...(thread ? { replyTo: thread } : {}) });
+      }
+      return;
+    }
+
     for (const agent of this.myAgents) {
-      if (!shouldReply(agent, message, channel, channelAgents)) continue;
+      if (message.invocation) {
+        if (agent.id !== invocationTarget) continue;
+        if (!mayDriveAgent(message.authorId, agent)) continue;
+        if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") continue;
+      } else if (commandHasExplicitTarget) {
+        // Explicit command targets still require an owner-authorised human and
+        // a live in-room agent. Unknown/ambiguous targets are handled once by
+        // the first room agent below; no other agent may free-chatter into the
+        // command.
+        if (!mayDriveAgent(message.authorId, agent)) continue;
+        if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") continue;
+        if (!commandTarget || agent.id !== commandTarget.id) continue;
+      } else if (!shouldReply(agent, message, channel, channelAgents)) continue;
       // The handoff command is answered by exactly one agent — the sender — and
       // deliberately silences the receiver's ordinary reply, so a "@To" mention
       // in the command does not produce both a handoff AND a chat answer.
@@ -759,6 +1060,76 @@ export class Engine {
         if (me === handoffCmd.to.toLowerCase()) continue;
       }
       const bare = message.text.replace(/@[\w-]+\s*/g, "");
+      // Cloud9-owned slash commands are translated into existing engine paths.
+      // The relay still carries ordinary message text; this is the server-side
+      // meaning that keeps a palette row from being cosmetic.
+      if (composerCommand) {
+        if (composerCommand.name === "assign") {
+          const target = composerCommand.target
+            ? (() => {
+              const matches = channelAgents.filter(a =>
+                a.name.toLocaleLowerCase() === composerCommand.target!.toLocaleLowerCase()
+                || a.id.toLocaleLowerCase() === composerCommand.target!.toLocaleLowerCase());
+              return matches.length === 1 ? matches[0] : undefined;
+            })()
+            : undefined;
+          // `/assign` names the actual room agent. Never fall back to whichever
+          // agent happened to win mention routing when that name is absent.
+          if (!target || target.id !== agent.id) {
+            if (!target && channelAgents[0]?.id === agent.id) {
+              this.agentSend(agent.id, channel.id,
+                `I could not assign that work because @${composerCommand.target ?? "the named agent"} `
+                + "is not an agent in this room.", { ...(thread ? { replyTo: thread } : {}) });
+            }
+            continue;
+          }
+          const title = composerCommand.argument?.trim();
+          if (!title) continue; // parser rejects this; fail closed if changed
+          const needsApproval = approvalsFor(agent).background || needsApprovalToRun(agent);
+          this.sendFrame({
+            type: "createTask", agentId: agent.id, channelId: channel.id, title,
+            requesterId: message.authorId,
+            ...(needsApproval ? { needsApproval: true, action: `Run background task: ${title}` } : {}),
+          });
+          this.pendingAsks = rememberAsk(this.pendingAsks, {
+            agentId: agent.id, channelId: channel.id, title, messageId: message.id, at: Date.now(),
+            ...(thread ? { replyTo: thread } : {}),
+          });
+          this.reactAs(agent.id, message.id, "picked");
+          this.agentSend(agent.id, channel.id, needsApproval
+            ? "I can take that assignment, but it is waiting for my owner's approval first. 🔒 (see Tasks panel)"
+            : "Assignment accepted — I'll work on it in the background and post here when done. ⏳",
+            { ...(thread ? { replyTo: thread } : {}) });
+          continue;
+        }
+
+        const argument = composerCommand.argument?.trim();
+        if (composerCommand.name === "ship") {
+          if (!argument) continue;
+          void this.enqueueAgentTurn(agent.id, async () => {
+            await this.workInRepository(agent, {
+              channelId: channel.id, ask: argument, triggerAuthor: message.authorName,
+              ...(thread ? { replyTo: thread } : {}),
+            });
+          });
+          continue;
+        }
+
+        const trigger = composerCommand.name === "summarize"
+          ? `Summarize this conversation${argument ? `, focusing on ${argument}` : ""}. `
+            + "Include key decisions, open questions, and next actions."
+          : composerCommand.name === "review"
+            ? `Review ${argument} in this conversation. This is a read-only review: inspect and report findings, `
+              + "but do not edit files, run write operations, or publish anything."
+            : argument;
+        if (!trigger) continue;
+        void this.enqueueAgentTurn(agent.id, () => this.takeTurn(
+          agent, channel.id, { ...message, text: trigger },
+          composerCommand.name === "plan" ? { planFirst: true } :
+            composerCommand.name === "review" ? { reviewOnly: true } : undefined,
+        ));
+        continue;
+      }
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
       // STOP WHAT IT IS DOING: "@Agent !stop".
       //
@@ -811,6 +1182,7 @@ export class Engine {
         const needsApproval = approvalsFor(agent).background || needsApprovalToRun(agent);
         this.sendFrame({
           type: "createTask", agentId: agent.id, channelId: channel.id, title,
+          sourceMessageId: message.id,
           // the person who TYPED it, not the account this engine runs as — a
           // friend's job must stay their job in Tasks and in the activity log
           requesterId: message.authorId,
@@ -1028,6 +1400,8 @@ export class Engine {
       ...(agent.model ? { model: agent.model } : {}),
       ...(input.channelId ? { channelId: input.channelId } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      ...(input.invocation ? { invocation: input.invocation } : {}),
       requestedBy: input.triggerAuthor,
       requestedByKind: input.requesterKind ?? "human",
       ask: input.trigger,
@@ -1045,6 +1419,10 @@ export class Engine {
       // CLAUDE.md, his connected services and his hooks loaded (`ownersetup.ts`).
       ownerSetup: usesOwnerSetup(agent),
     };
+    // Allocate the turn id before the provider starts. The same id is used by
+    // every preview event and by the durable run record, so a late frame can
+    // never be mistaken for a newer turn.
+    const turnId = newRunId(seed.startedAt);
     let trace: ProviderTrace | undefined;
     // ==================================================================
     // WHAT THIS AGENT MAY SPEND — decided HERE, once, for every kind of turn
@@ -1083,6 +1461,10 @@ export class Engine {
      *  path, any runner that ignores the option) must cost the room no frames
      *  at all, not one meaningless "it's finished" for a box nobody saw. */
     let streamed = false;
+    let responseStarted = false;
+    let responseClosed = false;
+    let responseSeq = 0;
+    let responseChars = 0;
     // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
     /** the handle that stops this turn; absent until the harness is actually run */
     let stop: ReturnType<typeof newStopScope> | undefined;
@@ -1111,8 +1493,11 @@ export class Engine {
       if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
       const provider = this.providerFor(agent);
       if (!provider) {
-        throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
+        throw new HarnessUnavailableError(
+          harness, `${harness} is not connected on this machine`,
+          this.harnessReadiness?.(harness));
       }
+      const responseCapable = canSignal && provider.canStreamResponse?.() === true;
       // ASKED TO SHOW A PLAN BY A HARNESS THAT HAS NO PLAN MODE. Refused out
       // loud rather than quietly doing the work — see `PlanNotOfferedError`.
       // This is the last gate; `planFirstTurn` asks the same question earlier so
@@ -1156,7 +1541,7 @@ export class Engine {
         // is a bounded string; an agent that has saved nothing gets "" and the
         // prompt says nothing about memory. Reading its own store must never be
         // the reason a turn fails, so it is wrapped.
-        memory: this.rememberedFor(agent.id),
+        memory: this.rememberedFor(agent.id, input.channelId),
         // THE INSTRUCTION TRAVELS WITH THE TURN, and `buildAgentPrompt` refuses
         // to render without it. This is the line the old `buildAgentPrompt(agent,
         // context)` threw away, which is why a 6:30am check-in was woken up and
@@ -1177,8 +1562,34 @@ export class Engine {
           ? { maxBudgetUsd: spendVerdict.turnCapUsd } : {}),
         // SAY WHAT YOU INTEND, AND DO NOTHING. Only ever set by `planFirstTurn`.
         ...(input.planOnly ? { planOnly: true } : {}),
+        ...(input.reviewOnly ? { reviewOnly: true } : {}),
+        ...(input.summaryOnly ? { summaryOnly: true } : {}),
         ...(providerAbortController ? { abortController: providerAbortController } : {}),
         onTrace: t => { trace = t; },
+        ...(responseCapable ? {
+          onResponseText: (chunk: string) => {
+            if (responseClosed || typeof chunk !== "string" || chunk.length === 0) return;
+            // A provider callback is trusted only as far as its declared text;
+            // split oversized increments and enforce the same total ceiling the
+            // relay and desktop apply. No tool labels or reasoning reach here.
+            let offset = 0;
+            while (offset < chunk.length && !responseClosed) {
+              const piece = chunk.slice(offset, offset + RESPONSE_STREAM_LIMITS.deltaChars);
+              offset += piece.length;
+              if (responseChars + piece.length > RESPONSE_STREAM_LIMITS.totalChars) {
+                responseClosed = true;
+                if (responseStarted) this.sendResponseStream(agent.id, input, turnId, "response-fail", ++responseSeq, undefined, "response preview reached its size limit");
+                return;
+              }
+              if (!responseStarted) {
+                responseStarted = true;
+                this.sendResponseStream(agent.id, input, turnId, "response-start", 0);
+              }
+              responseChars += piece.length;
+              this.sendResponseStream(agent.id, input, turnId, "response-delta", ++responseSeq, piece);
+            }
+          },
+        } : {}),
         // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
         // and a room to show it against — the same gate `sendReceipt` uses, in
         // the same one place, so a scheduled or proactive turn cannot stream
@@ -1196,7 +1607,7 @@ export class Engine {
       // THE OWNER PULLED THE PLUG AND THE HARNESS STILL ANSWERED — a half-made
       // answer from a process that was killed mid-sentence. It is not reported
       // as a good turn, because it is not one.
-      if (stop.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
+      if (stop.stopped) this.turnWasStopped(agent, seed, input, trace, turnId); // throws
       // ===== GAP C BLOCK — end =====
       // DID THIS TURN GET THE MODEL IT ASKED FOR? Worked out once, here, and
       // put on the record, so the screen never has to guess from two ids what
@@ -1223,7 +1634,12 @@ export class Engine {
         finishedAt: Date.now(), outcome: "ok", trace, reply: text,
         ...(stoodIn ? { fellBackTo: stoodIn } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
-      });
+        ...(input.priorRunId ? { priorRunId: input.priorRunId } : {}),
+      }, turnId);
+      if (responseStarted && !responseClosed) {
+        responseClosed = true;
+        this.sendResponseStream(agent.id, input, turnId, "response-final", ++responseSeq);
+      }
       // NEVER A SILENT SWAP. He chose a model; he is told, in the room, when he
       // did not get it. The record carries the fact whether or not there is a
       // room to say it in, so a scheduled check-in that fell back is still
@@ -1247,10 +1663,20 @@ export class Engine {
       // A published version must point at the exact run that made it. If the run
       // record itself could not be built, the turn still returns its answer but
       // no unattributed file is invented on the hub.
-      if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
+      if (record && !input.summaryOnly) this.shareProduced(agent, input, seed.startedAt, record.id);
       // DID IT DO WHAT IT SAID? Checked against the record it just wrote, and
       // said out loud ONLY where the two disagree. See `checkClaims`.
-      if (record) this.checkClaims(agent, input, text, record);
+      if (record && !input.summaryOnly) this.checkClaims(agent, input, text, record);
+      if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+        && input.channelId && input.replyTo && input.triggerMessageId) {
+        const request: ThreadSummaryRequest = {
+          requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+          sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+        };
+        const facts = this.parseThreadSummary(text);
+        this.sendThreadSummaryResult(request, facts ? "ready" : "unavailable", facts, record?.id,
+          facts ? undefined : "the provider did not return a supported thread summary");
+      }
       return text;
     } catch (err) {
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
@@ -1261,10 +1687,38 @@ export class Engine {
       // exactly what the button offered.
       // Already recorded and already spoken for by the line above — it must not
       // be written down a second time on its way out.
-      if (err instanceof TurnStoppedError) throw err;
-      if (stop?.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
+      if (err instanceof TurnStoppedError) {
+        if (responseStarted && !responseClosed) {
+          responseClosed = true;
+          this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
+            undefined, "you stopped this run");
+        }
+        if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+          && input.channelId && input.replyTo && input.triggerMessageId) {
+          this.sendThreadSummaryResult({
+            requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+            sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+          }, "unavailable", undefined, undefined, "you stopped this summary");
+        }
+        throw err;
+      }
+      if (stop?.stopped) {
+        if (responseStarted && !responseClosed) {
+          responseClosed = true;
+          this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
+            undefined, "you stopped this run");
+        }
+        if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+          && input.channelId && input.replyTo && input.triggerMessageId) {
+          this.sendThreadSummaryResult({
+            requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+            sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+          }, "unavailable", undefined, undefined, "you stopped this summary");
+        }
+        this.turnWasStopped(agent, seed, input, trace, turnId); // throws
+      }
       // ===== GAP C BLOCK — end =====
-      this.recordRun(seed, {
+      const failedRecord = this.recordRun(seed, {
         finishedAt: Date.now(), outcome: "failed", trace,
         // the record keeps WHY, in words that carry no path, no argv and no
         // environment — the same rule sanitizeForChat enforces for chat
@@ -1276,13 +1730,30 @@ export class Engine {
         ...(err instanceof SpendCapReachedError
           ? { capStop: { which: err.which, capUsd: err.capUsd } } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
-      });
+        ...(input.priorRunId ? { priorRunId: input.priorRunId } : {}),
+      }, turnId);
+      if (responseStarted && !responseClosed) {
+        responseClosed = true;
+        this.sendResponseStream(agent.id, input, turnId,
+          err instanceof TurnStoppedError ? "response-cancel" : "response-fail",
+          ++responseSeq, undefined,
+          err instanceof TurnStoppedError ? "you stopped this run" : "the response did not finish");
+      }
       // ⚠️ — it did not go through. The tick says the STATE; the honest
       // sentence the caller posts says the words.
       this.sendVerdict(agent.id, input, {
         outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
         error: err instanceof Error ? err.message : String(err),
       });
+      if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+        && input.channelId && input.replyTo && input.triggerMessageId) {
+        const request: ThreadSummaryRequest = {
+          requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+          sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+        };
+        this.sendThreadSummaryResult(request, stop ? "unavailable" : "refused", undefined, failedRecord?.id,
+          err instanceof Error ? err.message : "the provider was unavailable");
+      }
       throw err;
     } finally {
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
@@ -1371,6 +1842,30 @@ export class Engine {
       this.sendFrame({ type: "agentSteps", agentId, channelId, messageId, done: true });
     } catch (err) {
       console.error("[engine] could not close a live view:", err);
+    }
+  }
+
+  /** Send a genuine provider response preview; relay supplies the timestamp. */
+  private sendResponseStream(
+    agentId: ID, input: TurnInput, turnId: string, kind: AgentResponseStreamKind,
+    seq: number, text?: string, reason?: string,
+  ): void {
+    const messageId = input.triggerMessageId;
+    const channelId = input.channelId;
+    if (!messageId || !channelId) return;
+    try {
+      this.sendFrame({
+        type: "agentResponse",
+        event: {
+          kind, channelId, triggerMessageId: messageId, agentId, turnId, seq,
+          // The relay overwrites this untrusted placeholder with hub time.
+          at: 0,
+          ...(text !== undefined ? { text } : {}),
+          ...(reason ? { reason } : {}),
+        },
+      });
+    } catch (err) {
+      console.error("[engine] could not send response preview:", err);
     }
   }
 
@@ -1601,16 +2096,32 @@ export class Engine {
     // sentence reaching here is either Cloud9's own or a plan already bounded
     // and stripped by `tidyPlan`.
     this.agentSend(agent.id, channelId, text,
-      { ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+      {
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        ...(input.triggerMessageId ? { responseTriggerMessageId: input.triggerMessageId } : {}),
+      });
   }
 
   /**
    * Build and store one run record. Never throws: a turn that worked must not
    * be reported as broken because its paperwork failed.
    */
-  private recordRun(seed: RunSeed, finish: RunFinish): RunRecord | undefined {
+  private recordRun(seed: RunSeed, finish: RunFinish, id?: string): RunRecord | undefined {
     try {
-      const record = buildRunRecord(seed, finish);
+      let record = buildRunRecord(seed, finish, id);
+      const bad = validateRunRecord(record);
+      if (bad && record.invocation) {
+        // A provider or older caller must not smuggle an unbounded receipt into
+        // the local run store. Keep the run audit, drop only the bad metadata,
+        // and make the redaction visible in its public error sentence.
+        const { invocation: _discarded, ...withoutInvocation } = record;
+        record = {
+          ...withoutInvocation,
+          error: withoutInvocation.error ?? "invocation receipt was refused before persistence",
+        };
+      }
+      const stillBad = validateRunRecord(record);
+      if (stillBad) throw new Error(stillBad);
       this.lastRun = record;
       this.runs.save(record);
       this.publishRun(record);
@@ -1825,12 +2336,12 @@ export class Engine {
    * still running and still costing him.
    */
   private turnWasStopped(
-    agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace,
+    agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace, id?: string,
   ): never {
     this.recordRun(seed, {
       finishedAt: Date.now(), outcome: "cancelled", trace,
       error: "you stopped this run",
-    });
+    }, id);
     this.sendVerdict(agent.id, input, {
       outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
       error: "you stopped this run",
@@ -1911,13 +2422,49 @@ export class Engine {
    */
   async takeTurn(
     agent: AgentDef, channelId: ID, trigger: Message,
-    opts: { planFirst?: boolean } = {},
+    opts: { planFirst?: boolean; reviewOnly?: boolean } = {},
   ): Promise<void> {
-    this.setStatus(agent.id, "working");
+    // The relay has already checked the request, but this is the last gate on
+    // the machine that spends the provider call. Re-check the model catalog and
+    // apply only a narrowing permission scope; a stale/forged message cannot
+    // widen the stored agent.
+    const request = trigger.invocation;
+    if (request) {
+      const room = this.channel(channelId);
+      const roomAgents = this.state?.agents.filter(candidate =>
+        !!room?.memberIds.includes(candidate.id)) ?? [agent];
+      const target = invocationTargetFor(trigger.text, roomAgents);
+      if (target !== agent.id) {
+        const problem = target
+          ? "choose invocation controls for the one agent named in this message"
+          : "the message must name exactly one unambiguous agent";
+        this.refuseInvocation(agent, channelId, trigger, problem);
+        return;
+      }
+    }
+    const provider = request ? this.providerFor(agent) : undefined;
+    const modelCatalog = request ? this.harnessModels?.(agent.provider ?? "claude") : undefined;
+    if (request) {
+      const problem = validateAgentInvocation(agent, request, modelCatalog);
+      if (problem) {
+        this.refuseInvocation(agent, channelId, trigger, problem);
+        return;
+      }
+      if (problem) {
+        this.agentSend(agent.id, channelId, `I could not start that invocation â€” ${problem}.`);
+        return;
+      }
+    }
+    const applied = request
+      ? agentForInvocation(agent, request, { effortSupported: provider?.supportsEffort?.() === true })
+      : { agent };
+    const turnAgent = applied.agent;
+    const invocationReadOnly = applied.receipt?.permissionScope === "readOnly";
+    this.setStatus(turnAgent.id, "working");
     const replyTo = threadOf(trigger);
     try {
       const brief: TurnInput = {
-        context: this.renderContext(channelId, agent, replyTo),
+        context: this.renderContext(channelId, turnAgent, replyTo),
         trigger: trigger.text,
         triggerAuthor: trigger.authorName,
         kind: "chat",
@@ -1926,13 +2473,15 @@ export class Engine {
         // the message the 👀 / 💭 / verdict are drawn on — the one being answered
         triggerMessageId: trigger.id,
         ...(replyTo ? { replyTo } : {}),
+        ...(opts.reviewOnly || invocationReadOnly ? { reviewOnly: true } : {}),
+        ...(applied.receipt ? { invocation: applied.receipt } : {}),
         // THE SAME THREAD, TURN AFTER TURN — offered so the harness can continue
         // its own session rather than being re-told the room. Chat turns only:
         // a delegated job, a scheduled check-in and repository work all reach
         // `respondAs` by other routes and stay cold, which is this slice's
         // deliberate edge (`sessionresume.ts`).
         ...(() => {
-          const thread = this.threadContinuity(agent, channelId, trigger);
+          const thread = this.threadContinuity(turnAgent, channelId, trigger);
           return thread ? { thread } : {};
         })(),
       };
@@ -1944,22 +2493,41 @@ export class Engine {
       // A PLAN TURN DOES NOT RESUME THE THREAD, so the continuity offered above
       // is dropped for it — see `planResume` in claude-cli.ts for why a
       // read-only session must not become the one the real turn continues.
-      if (opts.planFirst || showsPlanFirst(agent)) {
+      if (!opts.reviewOnly && !invocationReadOnly && (opts.planFirst || showsPlanFirst(turnAgent))) {
         const { thread: _dropped, ...cold } = brief;
-        await this.planFirstTurn(agent, cold);
+        await this.planFirstTurn(turnAgent, cold);
         return;
       }
-      const text = await this.respondAs(agent, brief);
-      this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
+      const text = await this.respondAs(turnAgent, brief);
+      this.agentSend(turnAgent.id, channelId, text, {
+        ...(replyTo ? { replyTo } : {}),
+        ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
+      });
     } catch (err) {
       // A STOP IS NOT A BREAKAGE. He pressed the button, so the agent says so
       // in its own words rather than being reported as broken.
-      this.agentSend(agent.id, channelId,
-        saidWhenTurnEnded(err, `${agent.name} could not take a turn`),
-        { ...(replyTo ? { replyTo } : {}) });
+      this.agentSend(turnAgent.id, channelId,
+        saidWhenTurnEnded(err, `${turnAgent.name} could not take a turn`),
+        {
+          ...(replyTo ? { replyTo } : {}),
+          ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
+        });
     } finally {
-      this.setStatus(agent.id, "idle");
+      this.setStatus(turnAgent.id, "idle");
     }
+  }
+
+  /** Refuse an invalid invocation before any provider work, with an auditable run. */
+  private refuseInvocation(agent: AgentDef, channelId: ID, trigger: Message, problem: string): void {
+    const now = Date.now();
+    this.recordRun({
+      kind: "chat", agentId: agent.id, agentName: agent.name,
+      provider: agent.provider ?? "claude", channelId,
+      requestedBy: trigger.authorName,
+      requestedByKind: trigger.authorKind === "agent" ? "agent" : "human",
+      ask: trigger.text, startedAt: now,
+    }, { finishedAt: now, outcome: "refused", error: `invocation refused: ${problem}` });
+    this.agentSend(agent.id, channelId, `I could not start that invocation — ${problem}.`);
   }
 
   /** Claim and execute tasks assigned to my agents (status not_started). */
@@ -1975,6 +2543,16 @@ export class Engine {
       this.pendingAsks = rest;
       if (messageId) this.askMessageFor.set(task.id, messageId);
       if (replyTo) this.askThreadFor.set(task.id, replyTo);
+    }
+    // Desktop "Hand this to…" requests arrive without the engine's local
+    // pending-ask ledger. The durable source fields are the authoritative
+    // continuation anchor for that path, so preserve the exact message/thread
+    // instead of pretending this is an unscoped Tasks-panel job.
+    if (!this.askMessageFor.has(task.id) && task.sourceMessageId) {
+      this.askMessageFor.set(task.id, task.sourceMessageId);
+    }
+    if (!this.askThreadFor.has(task.id) && task.sourceThreadId) {
+      this.askThreadFor.set(task.id, task.sourceThreadId);
     }
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     // Last gate on "who may make this agent act". The relay checks the same
@@ -2124,7 +2702,7 @@ export class Engine {
       this.markWork(task, "working", false);
       this.markWork(task, "done");
       this.reportFinished(agent.id, task.channelId, thread,
-        `📦 Task done:\n${text}`, roomLineForThreadJob(task.title));
+        `📦 Task done:\n${text}`, roomLineForThreadJob(task.title), true, this.askMessageFor.get(task.id));
     } catch (err) {
       // HE STOPPED IT, so it is not a job that failed and it is certainly not a
       // job that finished. Its own ending, written down and said out loud.
@@ -2139,7 +2717,7 @@ export class Engine {
       // a job that fell over is still a finished job: the reason goes where it
       // was asked for, and the room hears that it ended
       this.reportFinished(agent.id, task.channelId, thread, said,
-        roomLineForThreadJob(task.title, "failed"), false);
+        roomLineForThreadJob(task.title, "failed"), false, this.askMessageFor.get(task.id));
     } finally {
       this.setStatus(agent.id, "idle");
       this.askMessageFor.delete(task.id);
@@ -2378,7 +2956,7 @@ export class Engine {
         ...(thread ? { replyTo: thread } : {}),
       });
       this.reportFinished(agent.id, channelId, thread, `📦 Background task done:\n${text}`,
-        roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")));
+        roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")), true, trigger.id);
     } catch (err) {
       // Same law as `jobWasStopped`: a stop is said in the room he pressed the
       // button in, and it is never dressed up as a job that finished.
@@ -2623,7 +3201,7 @@ export class Engine {
                 `answer instead, and remember it next time if it still matters.`,
             };
           }
-          const answer = await this.rememberFromAgent(turn.agentId!, text, kind);
+          const answer = await this.rememberFromAgent(turn.agentId!, text, kind, turn.channelId as ID);
           if (answer.saved) written++;
           return answer;
         },
@@ -3281,9 +3859,19 @@ export class Engine {
    * must never be the reason a turn fails, so it is wrapped: a store that
    * cannot be read seeds nothing rather than throwing.
    */
-  private rememberedFor(agentId: ID): string {
+  private rememberedFor(agentId: ID, channelId?: ID): string {
     try {
-      return retrieveMemory(this.memory.list(agentId));
+      const notes = this.memory.list(agentId);
+      if (!channelId) return retrieveMemory(notes);
+      const policy = this.channelMemoryPolicy(channelId, agentId);
+      // A turn with no live channel/agent membership has no authorized
+      // channel-scoped memory context. Do not seed notes from an invented
+      // fallback room.
+      if (!policy) return "";
+      const mode = policy.mode;
+      return retrieveMemory(notes.filter(note =>
+        (note.channelId === undefined || note.channelId === channelId)
+        && channelMemoryMayUse(mode, note)));
     } catch (err) {
       console.error(`[engine] could not seed memory for agent ${agentId}:`, err);
       return "";
@@ -3301,6 +3889,14 @@ export class Engine {
     agent: AgentDef, channelId: ID, text: string, replyTo?: ID,
   ): Promise<void> {
     const inThread = replyTo ? { replyTo } : {}; // asked in a thread, answered in it
+    const policy = this.channelMemoryPolicy(channelId, agent.id);
+    if (!policy) return;
+    if (!channelMemoryMaySave(policy.mode, "owner", "fact")) {
+      this.agentSend(agent.id, channelId,
+        `I didn't save that to memory — this channel is set to ${policy.mode === "none" ? "No retention" : "Decision summaries"}. ` +
+        `Cloud9 refused the note at its storage boundary; this does not claim the model forgot it.`, inThread);
+      return;
+    }
     const verdict = worthRemembering(text);
     if (!verdict.keep) {
       this.agentSend(agent.id, channelId,
@@ -3310,7 +3906,7 @@ export class Engine {
     }
     const note: MemoryNote = {
       id: newMemoryId(), agentId: agent.id, kind: "fact",
-      text: text.trim(), createdAt: Date.now(), source: "owner",
+      text: text.trim(), createdAt: Date.now(), source: "owner", channelId,
     };
     const saved = this.memory.save(note);
     if (!saved) {
@@ -3349,7 +3945,7 @@ export class Engine {
    * its own cap. A refusal comes back in words the agent can read out.
    */
   async rememberFromAgent(
-    agentId: ID, text: string, kind: string,
+    agentId: ID, text: string, kind: string, channelId?: ID,
   ): Promise<Cloud9RememberAnswer> {
     if (!this.myAgents.some(a => a.id === agentId)) {
       return { saved: false, why: "That memory does not belong to you, so nothing was saved." };
@@ -3367,12 +3963,27 @@ export class Engine {
     // something real. The stored kind is only ever one of the five, so nothing
     // a model types can reach `validateNote` as a surprise.
     const known: MemoryKind[] = ["fact", "preference", "decision", "outcome", "correction"];
+    const resolvedKind = known.includes(kind as MemoryKind) ? kind as MemoryKind : "fact";
+    const policy = channelId ? this.channelMemoryPolicy(channelId, agentId) : undefined;
+    if (channelId && !policy) {
+      return {
+        saved: false,
+        why: "That memory was not saved because this agent is not a member of that conversation.",
+      };
+    }
+    if (policy && !channelMemoryMaySave(policy.mode, "agent", resolvedKind)) {
+      return {
+        saved: false,
+        why: `That was not saved — this channel's memory policy is ${policy.mode === "none" ? "No retention" : policy.mode === "summary" ? "Decision summaries" : "Explicit only"}. ` +
+          "Cloud9 refused it at its storage boundary; it cannot claim the model forgot the text.",
+      };
+    }
     const note: MemoryNote = {
-      id: newMemoryId(), agentId, kind: known.includes(kind as MemoryKind) ? kind as MemoryKind : "fact",
+      id: newMemoryId(), agentId, kind: resolvedKind,
       text: text.trim(), createdAt: Date.now(),
       // WHO WROTE IT, honestly. This is the whole of the owner's visibility: the
       // panel reads this field to say "it chose to remember this".
-      source: "agent",
+      source: "agent", ...(channelId ? { channelId } : {}),
     };
     let saved: string | undefined;
     try {
@@ -3392,6 +4003,20 @@ export class Engine {
     this.reportMemory(agentId);
     return { saved: true, text: note.text };
   }
+
+  /** Hook-owned notes use the same channel policy gate as a human request. */
+  saveOwnerMemoryNote(agentId: ID, channelId: ID | undefined, text: string): boolean {
+    const policy = channelId ? this.channelMemoryPolicy(channelId, agentId) : undefined;
+    if (channelId && !policy) return false;
+    if (policy && !channelMemoryMaySave(policy.mode, "owner", "fact")) return false;
+    const verdict = worthRemembering(text);
+    if (!verdict.keep) return false;
+    const note: MemoryNote = {
+      id: newMemoryId(), agentId, kind: "fact", text: text.trim(),
+      createdAt: Date.now(), source: "owner", ...(channelId ? { channelId } : {}),
+    };
+    return Boolean(this.memory.save(note));
+  }
   // ===== GAP A BLOCK — end =====
 
   /**
@@ -3402,7 +4027,13 @@ export class Engine {
   reportMemory(agentId: ID): void {
     try {
       if (!this.myAgents.some(a => a.id === agentId)) return;
-      const notes = this.memory.list(agentId);
+      const notes = this.memory.list(agentId).filter(note => {
+        if (!note.channelId) return true; // existing global agent memory UI stays distinct
+        const channel = this.channel(note.channelId);
+        if (!channel || !channel.memberIds.includes(agentId)) return false;
+        const policy = this.channelMemoryPolicy(note.channelId, agentId);
+        return Boolean(policy && channelMemoryMayUse(policy.mode, note));
+      });
       this.sendFrame({ type: "memoryChanged", agentId, notes });
     } catch (err) {
       console.error(`[engine] could not report memory for agent ${agentId}:`, err);
@@ -3516,11 +4147,12 @@ export class Engine {
    */
   agentSend(
     agentId: ID, channelId: ID, text: string,
-    opts: { proactive?: boolean; replyTo?: ID } = {},
+    opts: { proactive?: boolean; replyTo?: ID; responseTriggerMessageId?: ID } = {},
   ): void {
     this.sendFrame({
       type: "agentSend", agentId, channelId, text, proactive: opts.proactive ?? false,
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...(opts.responseTriggerMessageId ? { responseTriggerMessageId: opts.responseTriggerMessageId } : {}),
     });
   }
 
@@ -3560,11 +4192,16 @@ export class Engine {
    */
   private reportFinished(
     agentId: ID, channelId: ID, thread: ID | undefined,
-    detail: string, roomLine: string, proactive = true,
+    detail: string, roomLine: string, proactive = true, responseTriggerMessageId?: ID,
   ): void {
     this.agentSend(agentId, channelId, detail,
-      { proactive, ...(thread ? { replyTo: thread } : {}) });
-    if (thread) this.agentSend(agentId, channelId, roomLine, { proactive });
+      {
+        proactive, ...(thread ? { replyTo: thread } : {}),
+        ...(responseTriggerMessageId ? { responseTriggerMessageId } : {}),
+      });
+    if (thread) this.agentSend(agentId, channelId, roomLine, {
+      proactive, ...(responseTriggerMessageId ? { responseTriggerMessageId } : {}),
+    });
   }
 
   private setStatus(agentId: ID, status: "idle" | "working" | "braked"): void {

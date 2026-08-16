@@ -258,6 +258,9 @@ test("link write checks refuse inaccessible targets; open redacts stripped ids",
   // Seed a real task in the project channel, link it, then open as a member — available:true.
   const agent = { id: "link-agent", ownerId: relay.ownerId, name: "Linker", emoji: "🔗", persona: "Links", abilities: {} } as AgentDef;
   relay.store.saveAgent(agent);
+  owner.send({ type: "addMembers", channelId: channel.id, memberIds: [agent.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channel.id && f.channel.memberIds.includes(agent.id));
   owner.send({ type: "createTask", agentId: agent.id, channelId: channel.id, title: "Linked work" });
   const taskFrame = await owner.wait<Extract<ServerFrame, { type: "task" }>>(f => f.type === "task");
   owner.send({

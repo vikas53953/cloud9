@@ -75,7 +75,11 @@ test("a real WebSocket close reconnects without answering a pending plan", async
   await until(() => engine.ws !== oldSocket, "the Engine to create its reconnect socket");
   assert.equal(engine.approvals.pending, 1, "a dropped socket answered for the owner");
 
-  owner.send({ type: "decideApproval", approvalId: card.id, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: card.id, decision: "approved",
+    expectedRevision: card.revision ?? 0, approvalEpoch: card.approvalEpoch,
+    requestId: "reconnect-approve",
+  });
   const result = await outcome;
   assert.equal(result.approved, true, "the later approval did not reach the original waiter");
 
@@ -105,7 +109,11 @@ test("a real restart says when an approved zombie card did nothing", async () =>
     // decision.
     currentFirst.stop();
     await outcome;
-    currentOwner.send({ type: "decideApproval", approvalId: card.id, decision: "approved" });
+    currentOwner.send({
+      type: "decideApproval", approvalId: card.id, decision: "approved",
+      expectedRevision: card.revision ?? 0, approvalEpoch: card.approvalEpoch,
+      requestId: "restart-approve",
+    });
     await until(() => currentRelay.store.approval(card.id)?.status === "approved",
       "the hub to record the approval");
 
