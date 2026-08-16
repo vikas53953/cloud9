@@ -1261,7 +1261,8 @@ select:not(:disabled),.input:not(:disabled),.chip:not(:disabled),.iconbtn:not(:d
 }
 .btn:hover:not(:disabled),.ghostbtn:hover:not(:disabled),.secondary:hover:not(:disabled),.ghost:hover:not(:disabled){background:var(--surface-2);border-color:var(--ink-3);}
 .btn:active:not(:disabled),.ghostbtn:active:not(:disabled),.secondary:active:not(:disabled),.ghost:active:not(:disabled){transform:translateY(1px);}
-.btn:disabled,.ghostbtn:disabled,.secondary:disabled,.ghost:disabled{background:var(--disabled-bg);color:var(--disabled-text);border-color:var(--disabled-border);opacity:1;}
+.btn:disabled,.ghostbtn:disabled{background:var(--disabled-bg);color:var(--disabled-text);border-color:var(--disabled-border);opacity:1;}
+.secondary:disabled,.ghost:disabled{background:var(--disabled-bg);color:var(--disabled-text);border-color:var(--disabled-border);opacity:1;}
 .btn.small,.ghostbtn.small,.primary.small,.gold.small,.btn-sm,.secondary.small,.ghost.small{padding:5px 10px;font-size:12.5px;}
 .btn.danger,.ghostbtn.danger,.ghost.danger,.iconbtn.danger{color:var(--madder);border-color:color-mix(in srgb,var(--madder) 40%,transparent);}
 .btn.danger:hover:not(:disabled),.ghostbtn.danger:hover:not(:disabled),.ghost.danger:hover:not(:disabled),.iconbtn.danger:hover:not(:disabled){background:var(--madder-soft);border-color:var(--madder);color:var(--madder);}
